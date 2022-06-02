@@ -247,9 +247,6 @@ class DistributedDataset:
                         for input_name in values:
                             if self.pipe_model.stage_id == key and input_name in column_names:
                                 column_names.remove(input_name)
-                    if "image" in column_names:
-                        column_names.remove("image")
-                    print(self.dataset, self.pipe_model.stage_id, self.input_to_stage_dic)
                     self.dataset = self.dataset.remove_columns(column_names)
                 else:
                     self.dataset = None
