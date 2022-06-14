@@ -51,7 +51,7 @@ To use Merak, make the following modifications to your programs:
 3. Set training arguments `MerakArguments`. Replacement of [transformers trainer arguments](https://huggingface.co/docs/transformers/master/en/main_classes/trainer#transformers.TrainingArguments)
 4. Set `MerakTrainer`. Replacement of [transformers trainer](https://huggingface.co/docs/transformers/master/en/main_classes/trainer#trainer).
 
-Example usage (see the Merak [examples](https://github.com/HPDL-group/merak_prerelease/examples/) directory for full training examples):
+Example usage (see the Merak [examples](https://github.com/HPDL-group/Merak/examples/) directory for full training examples):
 
 ```Python
 import Merak
@@ -81,7 +81,7 @@ trainer = MerakTrainer(
 trainer.train()
 ```
 
-For more details you could refer to our api [document](https://github.com/HPDL-Group/merak_prerelease/blob/main/docs/api_doc.md).
+For more details you could refer to our api [document](https://github.com/HPDL-Group/Merak/blob/main/docs/api_doc.md).
 For more detail usage, please check [transformers](https://github.com/huggingface/transformers) tutorials and its trainer [examples](https://github.com/huggingface/transformers/tree/master/examples/pytorch).
 
 
