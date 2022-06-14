@@ -66,7 +66,8 @@ class DeepSpeedEngine(Module):
                  config=None,
                  config_params=None,
                  dont_change_device=False,
-                 train_schedule='1f1b'):
+                 train_schedule='1f1b',
+                 return_logits=False):
         super(DeepSpeedEngine, self).__init__()
         self.dont_change_device = dont_change_device
         self.client_optimizer = optimizer
@@ -89,6 +90,7 @@ class DeepSpeedEngine(Module):
         self.train_schedule = train_schedule
         self.gas_boundary_ctr = 0
         self.dist_backend = "nccl"
+        self.return_logits = return_logits
 
 
         # needed for zero_to_fp32 weights reconstruction to remap nameless data to state_dict

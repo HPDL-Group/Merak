@@ -30,13 +30,13 @@ Parameters:
 
 
 
-### class Merak.*MerakArguments*
+### class *Merak.MerakArguments*
 
 > Class of Merak's arguments was derived from *TrainingArguments*  of huggingface transformers for convenience. We provide some argument for user, to set method of splitting model.
 
 Extra parameters:
 
--   train_schedule (str, Optional,  defaults to '1f1b') -- Possible choices are the pipe schedules as strings: '1f1b','pre_recompute_1f1b','ds_default','last_no_recompute_1f1b','full_critical_path_1f1b'.
+-   train_schedule (str, Optional,  defaults to '1f1b') -- Possible choices are the pipe schedules as strings: '1f1b','pre_recompute_1f1b','ds_default','last_no_recompute_1f1b','shifted_critical_path'.
 -   partition_method (str, Optional, defaults to 'uniform') -- Possible choices are the pipeline layer partition strategy as strings: 'uniform','uniform_floor','parameters'.
 -   init_method_std (float, defaults to 0.02) -- Standard deviation of the zero mean normal distribution used for tp weight initialization in Megatron.
 -   activation_checkpointing (bool, defaults to True) -- Whether to use activation checkpointing. 
@@ -55,7 +55,7 @@ Extra parameters:
 -   no_load_rng (bool, defaults to False) -- Do not load current optimizer.
 -   no_load_optim (bool, defaults to False) -- Do not load current optimizer.
 -   split_inputs (bool, defaults to False) -- Whether to split input data.
--   activation_checkpoint_ratio (float, Optional, defaults to None) -- activation checkpoint ratio, in range(0,1). Default to None.
+-   activation_checkpoint_ratio (float, Optional, defaults to None) -- activation checkpoint ratio of first stage, in range(0,1). Default to None.
 -   tp_overlapping_level (float, Optional, defaults to 0) -- "Possible tensor parallelism communication overlapping level from 0 to 3.
                                                               0 refers to no overlapping; 1 refers to only overlap within linear function;
                                                               2 refers to overlap within transformer blocks, requires rewrite transformer blocks;
@@ -64,7 +64,7 @@ Extra parameters:
 
 
 
-### class Merak.*MerakTrainer*
+### class *Merak.MerakTrainer*
 
 > Class of Merak's trainer was derived from *Trainer*  of huggingface transformers for convenience. We provide some argument for user, to support tracing and loss computing
 

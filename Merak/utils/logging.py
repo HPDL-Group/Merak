@@ -99,3 +99,45 @@ def should_log_le(max_log_level_str):
 
     return get_current_level() <= log_levels[max_log_level_str]
 
+class Metric(object):
+    def __init__(self, name):
+        self.name = name
+        self.sum = torch.tensor(0.)
+        self.n = torch.tensor(0.)
+
+    def update(self, val):
+        self.sum += val
+        self.n += 1
+
+    def reset(self):
+        self.sum = torch.tensor(0.)
+        self.n = torch.tensor(0.)
+
+    @property
+    def avg(self):
+        return self.sum / self.n
+
+class AccMetric(object):
+    def __init__(self):
+        self.metrics = {}
+
+    def update(self, key, val):
+        if key in self.metrics:
+            self.metrics[key].update(val)
+        else:
+            self.metrics[key] = Metric(key)
+            self.metrics[key].update(val)  
+
+    def reset(self):
+        for key in self.metrics:
+            self.metrics[key].reset()
+
+    @property
+    def avg(self):
+        avg_dict = {}
+        for key in self.metrics:
+            avg_dict[key] = self.metrics[key].avg.item()
+        self.reset()
+
+        return avg_dict
+

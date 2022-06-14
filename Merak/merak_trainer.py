@@ -36,6 +36,7 @@ from .runtime.pipe_engine import PipelineEngine
 
 from .utils.merak_args import mergeargs, MerakArguments, manual_set_args
 from .utils.dataloader import MegatronPretrainingRandomSampler
+from .utils.logging import AccMetric, log_dist
 
 from .autoshard.convert import convert_to_sequential, hf_fx_compatibility
 
@@ -279,7 +280,8 @@ class MerakTrainer(Trainer):
                                 mpu=pipe_model.mpu(),
                                 dist_init_required=False,
                                 config=deepspeed_config,
-                                train_schedule=self.args.train_schedule)
+                                train_schedule=self.args.train_schedule,
+                                return_logits=self.args.return_logits)
 
         self.optimizer = self.pipe_model.optimizer
         self.lr_scheduler = self.pipe_model.lr_scheduler
@@ -298,15 +300,25 @@ class MerakTrainer(Trainer):
         loss = self.pipe_model.train_batch(self.iter_dataloader)
         return loss.detach()
 
-    def prediction_step(
-        self,
-        model,
-        inputs,
-        prediction_loss_only,
-        ignore_keys,
-    ):
-        loss = self.pipe_model.eval_batch(self.get_eval_dataloader())
-        return (loss, None, None)
+
+    def do_prediction(self):
+        eval_dataloader = self.get_eval_dataloader()
+        dataloader_length = len(eval_dataloader)//self.args.gradient_accumulation_steps
+        eval_iterator = iter(eval_dataloader)
+        metrics = AccMetric()
+        for idx in range(dataloader_length):
+            loss, logits, labels = self.pipe_model.eval_batch(eval_iterator)
+            metrics.update('eval_loss', loss.item())
+            if self.pipe_model.is_last_stage() and self.args.return_logits:
+                step_metrics = self.compute_metrics(
+                    transformers.trainer_utils.EvalPrediction(predictions=torch.cat(logits).cpu(), 
+                    label_ids=torch.cat(labels).cpu())
+                    )
+                for key in step_metrics:
+                    metrics.update(key, step_metrics[key])
+            dist.barrier()
+        return metrics.avg
+
 
 
     def _get_train_sampler(self):
@@ -343,31 +355,18 @@ class MerakTrainer(Trainer):
             pin_memory=self.args.dataloader_pin_memory,
         )
 
-    def _get_eval_sampler(self):
-
-        return MegatronPretrainingRandomSampler(
-            total_samples=len(self.train_dataset),
-            # Set random seed according to be consumed examples, but currently not supported
-            consumed_samples=0,
-            micro_batch_size=self.model_args.batch_size,
-            data_parallel_rank=mpu.get_data_parallel_rank(),
-            data_parallel_size=mpu.get_data_parallel_world_size())
-
-
-
-    def get_eval_dataloader(self, eval_dataset):
+    def get_eval_dataloader(self):
         if self.eval_dataset is None:
-            raise ValueError("Trainer: training requires a train_dataset.")
+            raise ValueError("Trainer: training requires a eval_dataset.")
 
         if isinstance(self.eval_dataset, torchvision.datasets.folder.ImageFolder):
             self.data_collator = None
         
         eval_dataset = self.eval_dataset
-        train_sampler = self._get_train_sampler()
 
         return torch.utils.data.DataLoader(
             eval_dataset,
-            batch_sampler=train_sampler,
+            batch_size=self.args.per_device_train_batch_size,
             collate_fn=self.data_collator,
             num_workers=self.args.dataloader_num_workers,
             pin_memory=self.args.dataloader_pin_memory,
@@ -427,10 +426,6 @@ class MerakTrainer(Trainer):
         return data
 
 
-
-
-
-
     def _maybe_log_save_evaluate(self, tr_loss, model, trial, epoch, ignore_keys_for_eval):
         if self.control.should_log:
             logs = {}
@@ -453,8 +448,12 @@ class MerakTrainer(Trainer):
 
         metrics = None
         if self.control.should_evaluate:
-            metrics = self.evaluate(ignore_keys=ignore_keys_for_eval)
-            self._report_to_hp_search(trial, epoch, metrics)
+            metrics = self.do_prediction()
+            if self.state.epoch is not None:
+                metrics["epoch"] = round(self.state.epoch, 2)
+            output = {**metrics, **{"step": self.state.global_step}}
+            if self.pipe_model.is_last_stage() and mpu.get_data_parallel_rank() == 0:
+                log_dist(output, ranks=[dist.get_rank()])
 
         if self.control.should_save:
             self.control = self.callback_handler.on_save(self.args, self.state, self.control)

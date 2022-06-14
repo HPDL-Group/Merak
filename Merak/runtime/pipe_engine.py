@@ -321,6 +321,7 @@ class PipelineEngine(DeepSpeedEngine):
             self.set_dataloader(data_iter)
 
         self.module.train()
+        self.do_train = True
         self.total_loss = None
         self._compute_loss = True
 
@@ -397,8 +398,12 @@ class PipelineEngine(DeepSpeedEngine):
         """
 
         self.module.eval()
+        self.do_train = False
 
         eval_output = None
+        if self.return_logits:
+            self.logits = []
+            self.labels = []
 
         self._compute_loss = compute_loss
 
@@ -431,8 +436,10 @@ class PipelineEngine(DeepSpeedEngine):
 
         # Restore the training iterator
         self.set_dataiterator(train_iterator)
-
-        return eval_output
+        if self.return_logits and self.is_last_stage():
+            return eval_output, self.logits, self.labels
+        else:
+            return eval_output, None, None
 
     def is_first_stage(self):
         """True if this process is in the first stage in the pipeline."""
@@ -619,6 +626,9 @@ class PipelineEngine(DeepSpeedEngine):
                 labels = self.pipe_buffers['labels'][buffer_id][0]
                 # print(outputs.shape, labels.shape)
                 self.loss = self.loss_model(outputs.view(-1, outputs.size(-1)), labels.view(-1))
+                if self.return_logits and not self.do_train:
+                    self.logits.append(outputs)
+                    self.labels.append(labels)
             else:
                 # Some models just return loss from forward()
                 self.loss = outputs

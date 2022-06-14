@@ -71,6 +71,9 @@ def mergeargs(training_args, model_config):
     if training_args.shard_count is None:
         training_args.shard_count = training_args.num_layers*2 + 4
 
+    if training_args.train_schedule == 'shifted_critical_path':
+        training_args.train_schedule = 'full_critical_path_1f1b'
+
     if training_args.activation_checkpointing == False:
         training_args.checkpoint_num_layers = 0
 
@@ -96,7 +99,7 @@ class MerakArguments(TrainingArguments):
     Using [`HfArgumentParser`] we can turn this class into [argparse](https://docs.python.org/3/library/argparse#module-argparse) 
     arguments that can be specified on the command line.
     Parameters:
-    -   train_schedule (str, Optional,  defaults to '1f1b') -- Possible choices are the pipe schedules as strings: '1f1b', 'ds_default'.
+    -   train_schedule (str, Optional,  defaults to '1f1b') -- Possible choices are the pipe schedules as strings: '1f1b', 'ds_default','last_no_recompute_1f1b', 'shifted_critical_path'.
     -   partition_method (str, Optional, defaults to 'uniform') -- Possible choices are the pipeline layer partion strategy as strings: 
         'uniform','uniform_floor','parameters'.
     -   init_method_std (float, defaults to 0.02) -- Standard deviation of the zero mean normal distribution used for tp weight initialization in Megatron
@@ -117,7 +120,7 @@ class MerakArguments(TrainingArguments):
     -   no_load_rng (bool, defaults to False) -- Do not load current optimizer.
     -   no_load_optim (bool, defaults to False) -- Do not load current optimizer.
     -   split_inputs (bool, defaults to False) -- Whether to split input data.
-    -   activation_checkpoint_ratio (float, Optional, defaults to None) -- activation checkpoint ratio, in range(0,1). Default to None.
+    -   activation_checkpoint_ratio (float, Optional, defaults to None) -- activation checkpoint ratio of first stage, in range(0,1). Default to None.
     -   tp_overlapping_level (float, Optional, defaults to 0) -- "Possible tensor parallelism communication overlapping level from 0 to 3."
                                                                  "0 refers to no overlapping; 1 refers to only overlap within linear function;"
                                                                  "2 refers to overlap within transformer blocks, requires rewrite transformer blocks;"
@@ -131,7 +134,7 @@ class MerakArguments(TrainingArguments):
             "help": "Possible choices are the pipe schedules as strings: '1f1b', 'ds_default'. Defaults to '1f1b'.",
             "choices": ['1f1b', 'pre_recompute_1f1b', 
                        'ds_default', 'last_no_recompute_1f1b', 
-                       'full_critical_path_1f1b'],
+                       'full_critical_path_1f1b, shifted_critical_path'],
         },
     )
     partition_method: str = field(
@@ -189,6 +192,10 @@ class MerakArguments(TrainingArguments):
         default=None, 
         metadata={"help": "Set the cache name of partitioned graphs, must be setted when cache_sharding is True."}
     )
+    return_logits: bool = field(
+        default=False,
+        metadata={"help": "Whether to return logits and labels in evaluation. Defaults to False"},
+    )
 
     # checkpoint arguments
     save: bool = field(
@@ -227,7 +234,7 @@ class MerakArguments(TrainingArguments):
 
     activation_checkpoint_ratio: Optional[List[str]] = field(
         default=None, 
-        metadata={"help": 'activation checkpoint ratio, in range(0,1) for each pipeline stage. Default to None'}
+        metadata={"help": 'activation checkpoint ratio of first stage, in range(0,1) for each pipeline stage. Default to None'}
     )
     tp_overlapping_level: int = field(
         default=0,
