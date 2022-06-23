@@ -99,7 +99,7 @@ class MerakArguments(TrainingArguments):
     Using [`HfArgumentParser`] we can turn this class into [argparse](https://docs.python.org/3/library/argparse#module-argparse) 
     arguments that can be specified on the command line.
     Parameters:
-    -   train_schedule (str, Optional,  defaults to '1f1b') -- Possible choices are the pipe schedules as strings: '1f1b', 'ds_default','last_no_recompute_1f1b', 'shifted_critical_path'.
+    -   train_schedule (str, Optional,  defaults to '1f1b') -- Some possible choices are the pipe schedules as strings: '1f1b', 'ds_default','last_no_recompute_1f1b', 'shifted_critical_path'.
     -   partition_method (str, Optional, defaults to 'uniform') -- Possible choices are the pipeline layer partion strategy as strings: 
         'uniform','uniform_floor','parameters'.
     -   init_method_std (float, defaults to 0.02) -- Standard deviation of the zero mean normal distribution used for tp weight initialization in Megatron
@@ -131,17 +131,16 @@ class MerakArguments(TrainingArguments):
     train_schedule: str = field(
         default="1f1b",
         metadata={
-            "help": "Possible choices are the pipe schedules as strings: '1f1b', 'ds_default'. Defaults to '1f1b'.",
-            "choices": ['1f1b', 'pre_recompute_1f1b', 
-                       'ds_default', 'last_no_recompute_1f1b', 
-                       'full_critical_path_1f1b, shifted_critical_path'],
+            "help": "Possible choices are the pipe schedules as strings: `1f1b`, `ds_default`, `pre_recompute_1f1b`, "
+                    "`ds_default`,  `last_no_recompute_1f1b`, `full_critical_path_1f1b, shifted_critical_path`,"
+                    " Defaults to `1f1b`.",
         },
     )
     partition_method: str = field(
         default="uniform",
         metadata={
-            "help": "Possible choices are the pipeline layer partion strategy as strings: 'uniform','uniform_floor','parameters'. Defaults to 'uniform'.",
-            "choices": ['uniform','uniform_floor','parameters'],
+            "help": "Possible choices are the pipeline layer partion strategy as strings: 'uniform','uniform_floor',"
+                    "'parameters'. Defaults to 'uniform'.",
         },
     )
     init_method_std: float = field(
@@ -158,7 +157,8 @@ class MerakArguments(TrainingArguments):
     )
     input_names: Optional[List[str]] = field(
         default=None, 
-        metadata={"help": "The names of the inputs of the traced model. If unset, model.dummy_inputs().keys() are used instead. Example: ['input_ids', 'attention_mask', 'token_type_ids']"}
+        metadata={"help": "The names of the inputs of the traced model. If unset, model.dummy_inputs().keys() are used instead."
+                        "Example: ['input_ids', 'attention_mask', 'token_type_ids']"}
     )
     num_layers: Optional[int] = field(
         default=None, 
@@ -230,7 +230,10 @@ class MerakArguments(TrainingArguments):
         default=False,
         metadata={"help": "Whether to split input data"}
     )
-
+    parallel_vocab: bool = field(
+        default=True,
+        metadata={"help": "Whether to parallel vocabulary when TMP > 1"}
+    )
 
     activation_checkpoint_ratio: Optional[List[str]] = field(
         default=None, 

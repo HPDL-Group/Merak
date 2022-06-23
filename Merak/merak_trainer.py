@@ -29,6 +29,7 @@ from .modules.utils import get_params_for_weight_decay_optimization
 from .modules.module import PipelineModule
 from .modules.layer_proxy import Conv1DProxy, LinearProxy
 from .modules.mp_attrs import set_mp_attr, mp_is_setted, set_tp_layer_lists
+from .modules.mp_layers import ColPara
 
 from .runtime.utils import see_memory_usage
 from .runtime.checkpointing import checkpoint as checkpoint_func
@@ -198,7 +199,7 @@ class MerakTrainer(Trainer):
         # see_memory_usage('**** \n memory consumption after layer shard', force=True)
 
         pipe_model = PipelineModule(layers=model_layers,
-                                loss_fn=self.loss_fn, 
+                                loss_fn=self.get_loss_fn(self.loss_fn),
                                 topology=get_topo(),
                                 communicaiton_grid=get_grid(), 
                                 partition_method=self.args.partition_method,
@@ -226,22 +227,41 @@ class MerakTrainer(Trainer):
                     ## compound module, go inside it
                     build_module(module, proxy_layer, init_args)
         
-
         build_module(pipe_model, Conv1DProxy, (self.args.init_method_std, self.args.num_layers))              
         build_module(pipe_model, LinearProxy, (self.args.init_method_std, self.args.num_layers))              
 
+        if self.mp > 1:
+            if self.args.parallel_vocab:
+                # replace loss function
+                self.loss_fn = mpu.vocab_parallel_cross_entropy
+                # replace module to VocabParallelEmbedding and column parallel
+                def replace_module(model, to_replaced, module_func, get_args):
+                    for n, module in model.named_children():
+                        if isinstance(module, to_replaced) and str(module.weight.shape).replace(".", "_") in pipe_model.tied_modules_keys:
+                            setattr(model, n, module_func(*get_args(module)))
+                        if len(list(module.children())) > 0:
+                            replace_module(module, to_replaced, module_func, get_args)
+                replace_module(pipe_model, torch.nn.Embedding, mpu.VocabParallelEmbedding,
+                                lambda x: (x.weight.size(0), x.weight.size(1)))
+                replace_module(pipe_model, torch.nn.Linear, ColPara,
+                                lambda x: (x.in_features, x.out_features, torch.nn.init.xavier_normal_,(x.bias is not None),True))
+
+                keys_mapping = {str(i).replace(".", "_") : f'torch_Size([{i[0]//self.mp}, {i[1]}])' for i in emb_dim}
+                pipe_model.tied_modules_keys = set(keys_mapping.values())
+                new_tied_dic = {keys_mapping[i] : pipe_model.tied_stage[i] for i in pipe_model.tied_stage}
+                pipe_model.tied_stage = new_tied_dic
+
+            if self.args.tp_overlapping_level > 1:
+                first = True
+                for n, m in pipe_model.named_modules():
+                    if isinstance(m, PipedGPT2Block):
+                        last = m
+                        if first:
+                            m.is_first_layer = True
+                            first = False
+                last.is_last_layer = True
+
         pipe_model.tie_modules()
-
-        if self.mp > 1 and self.args.tp_overlapping_level > 1:
-            first = True
-            for n, m in pipe_model.named_modules():
-                if isinstance(m, PipedGPT2Block):
-                    last = m
-                    if first:
-                        m.is_first_layer = True
-                        first = False
-            last.is_last_layer = True
-
 
         if self.args.wall_clock_breakdown and mpu.get_data_parallel_rank() == 0 and mpu.get_model_parallel_rank() == 0:
             print(dist.get_rank(), pipe_model.stage_id, pipe_model)
@@ -458,6 +478,16 @@ class MerakTrainer(Trainer):
         if self.control.should_save:
             self.control = self.callback_handler.on_save(self.args, self.state, self.control)
 
+    def get_loss_fn(self, trainer_criterion):
+        criterion = trainer_criterion
+        def loss_fn(outputs, labels):
+            if isinstance(outputs, tuple):
+                outputs = outputs[0]
+            if isinstance(labels, tuple):
+                labels = labels[0]
+            loss = criterion(outputs.view(-1, outputs.size(-1)), labels.view(-1))
+            return loss
+        return loss_fn
 
 # monkey patch for train function
 MerakTrainer.train = train

@@ -59,8 +59,8 @@ from Merak import MerakArguments, MerakTrainer
 
 # Init Merak with degrees of 3D parallelism.
 dp = 2
-tp = 2
-pp = 1
+tp = 1
+pp = 2
 Merak.init(dp, tp, pp)
 
 # Set training args MerakArgument.
@@ -133,7 +133,7 @@ The Merak source code was based off the  [transformers trainer](https://huggingf
 ## Cite Us
 ```
 @article{lai2022merak,
-  title={Merak: A Efficient Distributed DNN Training Framework with Automated 3D Parallelism for Giant Foundation Models},
+  title={Merak: An Efficient Distributed DNN Training Framework with Automated 3D Parallelism for Giant Foundation Models},
   author = {Lai, Zhiquan and Li, Shengwei and Tang, Xudong and Ge, Keshi and Liu, Weijie and Duan, Yabo and Qiao, Linbo and Li, Dongsheng},
   journal={arXiv preprint arxiv:2206.04959},
   year={2022}

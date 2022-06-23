@@ -349,7 +349,8 @@ def shard_model_transformers(traced_graph_module, model, shard_count=3, output_n
             assert prev_node, "prev_node cannot be None"
 
             with new_graph.inserting_after(prev_node):
-                new_graph.output(env[prev_node.name])
+                # new_graph.output(env[prev_node.name])
+                new_node = new_graph.node_copy(node, lambda x: env[x.name])
             new_graph.lint()
             module_list.append(torch.fx.GraphModule(model, new_graph))
             break

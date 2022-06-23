@@ -619,13 +619,10 @@ class PipelineEngine(DeepSpeedEngine):
 
         # Optionally compute loss on the last device
         if self.is_last_stage():
-            if isinstance(outputs, tuple):
-                outputs = outputs[0]
-            
             if self._compute_loss and self.loss_model is not None:
-                labels = self.pipe_buffers['labels'][buffer_id][0]
+                labels = self.pipe_buffers['labels'][buffer_id]
                 # print(outputs.shape, labels.shape)
-                self.loss = self.loss_model(outputs.view(-1, outputs.size(-1)), labels.view(-1))
+                self.loss = self.loss_model(outputs, labels)
                 if self.return_logits and not self.do_train:
                     self.logits.append(outputs)
                     self.labels.append(labels)
@@ -1146,6 +1143,14 @@ class PipelineEngine(DeepSpeedEngine):
         else:
             inputs = self.pipe_buffers['inputs'][buffer_id].clone()
 
+        if self.pipe_buffers['extra_inputs'][buffer_id] is not None:
+            if isinstance(self.pipe_buffers['extra_inputs'][buffer_id], tuple):
+                extra_inputs = tuple(t.clone() for t in self.pipe_buffers['extra_inputs'][buffer_id])
+            else:
+                extra_inputs = self.pipe_buffers['extra_inputs'][buffer_id].clone()
+            if not isinstance(inputs, tuple):
+                inputs = tuple([inputs])
+            inputs = inputs + extra_inputs
 
         self.rng_manager.set_recompute_rng_state(buffer_id)
         # do recomputation

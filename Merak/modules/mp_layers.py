@@ -60,7 +60,9 @@ class ColPara(torch.nn.Module):
                 init_method=init_method,
                 skip_bias_add=False)
 
-        
+    @property
+    def weight(self):
+        return self.col_linear.weight
 
     def forward(self, x):
         # input is (batch_size, seq_length, hidden_size)

@@ -32,6 +32,7 @@ from ..utils import logger
 from . import utils as module_utils
 from ..runtime.checkpointing import checkpoint as checkpoint_func
 from ..autoshard.convert import add_inputs_to_shards
+from ..mpu.layers import VocabParallelEmbedding
 
 class PipelineError(Exception):
     """Errors related to the use of deepspeed.PipelineModule """
@@ -70,9 +71,6 @@ class PipelineModule(nn.Module):
                 for layer in self.layers:
                     x = layer(x)
                 return x
-
-        .. note::
-            Pipeline parallelism is not compatible with ZeRO-2 and ZeRO-3.
 
         Args:
             layers (Iterable): A sequence of layers defining pipeline structure. Can be a ``torch.nn.Sequential`` module.
@@ -465,7 +463,7 @@ class PipelineModule(nn.Module):
 
         tied_comms = {}
         if self._topo.get_dim('pipe') == 1:
-            return tied_comms
+            return
         for key in self.tied_modules_keys:
             for dp in range(self._grid.data_parallel_size):
                 for mp in range(self._grid.get_slice_parallel_world_size()):
@@ -531,7 +529,7 @@ class PipelineModule(nn.Module):
         for f in funcs:
             if isinstance(f, torch.fx.GraphModule):
                 for n, m in f.named_modules():
-                    if isinstance(m, torch.nn.Embedding):
+                    if isinstance(m, (torch.nn.Embedding, VocabParallelEmbedding)):
                         return False
         params = [f.parameters() for f in funcs if isinstance(f, torch.nn.Module)]
         return any(len(list(p)) > 0 for p in params)
