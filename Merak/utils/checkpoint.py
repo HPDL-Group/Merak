@@ -27,6 +27,7 @@ import torch
 from .. import mpu, print_rank_0
 from ..runtime.checkpointing import get_cuda_rng_tracker
 import torch.distributed as dist
+import datetime
 
 _CHECKPOINT_VERSION = None
 
@@ -49,29 +50,25 @@ def get_checkpoint_name(checkpoints_path, iteration,
     else:
         directory = 'iter_{:07d}'.format(iteration)
     # Use both the tensor and pipeline MP rank.
-    if mpu.get_pipe_parallel_world_size() == 1:
-        if complete:
-            return os.path.join(checkpoints_path,
-                            'iter_{:07d}_mp_rank_{:02d}'.format(
+    if mpu.get_model_parallel_world_size() == 1 and mpu.get_pipe_parallel_world_size() == 1:
+        return os.path.join(checkpoints_path,
+                            'iter_{:07d}_all_dp'.format(
                                 iteration,
-                                mpu.get_tensor_model_parallel_rank()),
-                            'complete_model_optim.pt')
+                            ),
+                            'model_optim.pt')
+
+    elif mpu.get_pipe_parallel_world_size() == 1 and mpu.get_model_parallel_world_size() != 1:
         return os.path.join(checkpoints_path, directory,
                             'mp_rank_{:02d}'.format(
-                                mpu.get_tensor_model_parallel_rank()),
-                            'model_optim_rng.pt')
-    if complete:
+                                mpu.get_model_parallel_rank()),
+                            'partial_model_optim.pt')
+
+    else:
         return os.path.join(checkpoints_path, directory,
-                        'iter_{:07d}_mp_rank_{:02d}_pp_rank_{:03d}'.format(
-                            iteration,
-                            mpu.get_model_parallel_rank(),
-                            mpu.get_pipe_parallel_rank()),
-                        'complete_model_optim.pt')
-    return os.path.join(checkpoints_path, directory,
-                        'mp_rank_{:02d}_pp_rank_{:03d}'.format(
-                            mpu.get_model_parallel_rank(),
-                            mpu.get_pipe_parallel_rank()),
-                        'model_optim_rng.pt')
+                            'mp_rank_{:02d}_pp_rank_{:03d}'.format(
+                                mpu.get_model_parallel_rank(),
+                                mpu.get_pipe_parallel_rank()),
+                            'partial_model_optim.pt')
 
 def ensure_directory_exists(filename):
     """Build filename's path if it does not already exists."""
@@ -139,8 +136,11 @@ def save_checkpoint(iteration, model, optimizer, lr_scheduler, args, epoch):
     # Only rank zero of the data parallel writes to the disk.
     model = unwrap_model(model)
 
+    dtime = datetime.datetime.now().strftime('%Y-%m-%d')
+    save_path = args.output_dir+'/{time}_ckpt'.format(time=dtime)
+
     print_rank_0('saving checkpoint at iteration {:7d} to {}'.format(
-        iteration, args.output_dir+'/ckpt'))
+        iteration, save_path))
 
     if not torch.distributed.is_initialized() or mpu.get_data_parallel_rank() == 0:
 
@@ -177,7 +177,7 @@ def save_checkpoint(iteration, model, optimizer, lr_scheduler, args, epoch):
         # torch.save(comp_model, check_name, _use_new_zipfile_serialization=False)
 
         # Save.
-        checkpoint_name = get_checkpoint_name(args.output_dir+'/ckpt', iteration)
+        checkpoint_name = get_checkpoint_name(save_path, iteration)
         ensure_directory_exists(checkpoint_name)
         torch.save(state_dict, checkpoint_name, _use_new_zipfile_serialization=False)
 
@@ -186,11 +186,11 @@ def save_checkpoint(iteration, model, optimizer, lr_scheduler, args, epoch):
         torch.distributed.barrier()
 
     print_rank_0('  successfully saved checkpoint at iteration {:7d} to {}'.format(
-        iteration, args.output_dir+'/ckpt'))
+        iteration, save_path))
 
     # And update the latest iteration
     if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
-        tracker_filename = get_checkpoint_tracker_filename(args.output_dir+'/ckpt')
+        tracker_filename = get_checkpoint_tracker_filename(save_path)
         with open(tracker_filename, 'w') as f:
             f.write(str(iteration))
 

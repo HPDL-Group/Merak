@@ -17,6 +17,7 @@
 
 # Parts of the code here are adapted from https://github.com/huggingface/transformers/blob/v4.15.0/src/transformers/utils/fx.py
 
+from multiprocessing import dummy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -97,7 +98,7 @@ def convert_to_sequential(model, args, extra_leaf_modules=(), trace_batch=None):
 
                 return model, result, input_to_shard
 
-        traced = symbolic_trace(
+        traced, dummy_inputs = symbolic_trace(
             model,
             input_names = args.input_names,
             batch_size = args.per_device_train_batch_size,
@@ -117,6 +118,7 @@ def convert_to_sequential(model, args, extra_leaf_modules=(), trace_batch=None):
         tracer = LayerProxyTracer(leaf_modules=default_leaf_modules+extra_leaf_modules)
         traced_graph = tracer.trace(model)
         traced = torch.fx.GraphModule(model, traced_graph)
+        dummy_inputs = None
 
     ## test code
     # print_rank_0(traced.graph)
@@ -156,7 +158,7 @@ def convert_to_sequential(model, args, extra_leaf_modules=(), trace_batch=None):
             dist.barrier()
         else:
             dist.barrier()
-
+    result[0].dummy_inputs = dummy_inputs
     # # test code
     # for i in result:
     #     if torch.distributed.get_rank() == 0:
@@ -335,15 +337,15 @@ def symbolic_trace(
     with torch.no_grad():
         traced_graph = tracer.trace(model, concrete_args=concrete_args)
     traced = torch.fx.GraphModule(model, traced_graph)
+    dummy_inputs = {}
+
+    for name in input_names:
+        dummy_inputs.update(tracer._generate_dummy_input(model, name))
 
     del traced_graph, tracer
 
     traced.config = copy.deepcopy(model.config)
     traced.num_choices = num_choices
-    # traced.dummy_inputs = {}
-
-    # for name in input_names:
-    #     traced.dummy_inputs.update(tracer._generate_dummy_input(model, name))
 
     traced.use_dynamic_batch_size = use_dynamic_batch_size
     traced.use_dynamic_sequence_length = use_dynamic_sequence_length
@@ -352,7 +354,7 @@ def symbolic_trace(
 
     transform_to_dynamic_input_(traced)
 
-    return traced
+    return traced, dummy_inputs
 
 
 def add_inputs_to_shards(gm, inputs):

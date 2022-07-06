@@ -150,8 +150,15 @@ def train(
     if resume_from_checkpoint:
         if os.path.exists(resume_from_checkpoint):
             iteration, epochs_trained = load_checkpoint(self.pipe_model, self.optimizer, self.lr_scheduler, self.args)
-            self.state.global_step = iteration
-            self.pipe_model.global_steps = iteration
+            if self.args.max_steps > 0 and iteration > self.args.max_steps:
+                self.state.global_step = 0
+                self.pipe_model.global_steps = 0
+                epochs_trained = 0
+            else:
+                self.state.global_step = iteration
+                self.pipe_model.global_steps = iteration
+        else:
+            raise ValueError("Cannot find checkpoint files")
 
     # Data loader and number of training steps
 

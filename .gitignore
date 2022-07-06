@@ -16,6 +16,8 @@
 **/tmp_trainer
 *.egg-info/
 **/*_cache/
+*.so
+**/build
 
 # vscode configurations
 **/.vscode

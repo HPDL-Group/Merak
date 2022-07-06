@@ -53,6 +53,8 @@ class LinearProxy(nn.Module):
 
         self.mp_attr = ' '
 
+        self.__flops__ = 0
+
         w = torch.empty(1, 1)
         self.weight = NumelParameter(w)
         self.weight.num_element = lambda: self.out_features*self.in_features
@@ -93,6 +95,8 @@ class LinearProxy(nn.Module):
         # shape[-1] = self.out_features
         # if len(x.shape) == 2:
         #     return x[:, :1].expand(-1, self.out_features).contiguous()
+        self.__flops__ = 2 * x.numel() * self.out_features
+
         try:
             return x[:, :, :1].expand(-1,-1, self.out_features).contiguous()#, device=x.device)
         except IndexError:
@@ -142,4 +146,5 @@ class Conv1DProxy(nn.Module):
         )
     
     def forward(self, x):
+        self.__flops__ = 2 * x.numel() * self.out_features
         return x[:, :, :1].expand(-1, -1, self.out_features)

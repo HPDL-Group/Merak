@@ -124,7 +124,7 @@ class PipelineModule(nn.Module):
         self._num_layers = len(self._layer_specs)
         self._local_start = 0
         self._local_stop = None
-        self._partition_layers(method=partition_method)
+        self._partition_layers(method=partition_method, input_to_shard_dic=input_to_shard_dic)
 
         self.forward_funcs = []
         self.tied_modules = nn.ModuleDict()
@@ -373,7 +373,7 @@ class PipelineModule(nn.Module):
                     x = exec_range_func(start_idx, end_idx)(*x)
         return x
 
-    def _partition_layers(self, method='uniform'):
+    def _partition_layers(self, method='uniform', input_to_shard_dic=None):
         num_stages = self._topo.get_dim('pipe')
         stage_id = self._topo.get_coord(self.global_rank).pipe
 
@@ -398,7 +398,35 @@ class PipelineModule(nn.Module):
             # print(param_counts)
             self.parts = module_utils.partition_balanced(weights=param_counts,
                                                      num_parts=num_stages)
-        
+        elif method == 'autopipe':
+            from ..utils.profiler import FlopsProfiler
+            mflops_list = []
+            input = self._layer_specs[0].dummy_inputs
+            self.dummy_input = input 
+            extra_inputs = {}
+            for k, v in input_to_shard_dic.items():
+                if v != 0:
+                    if v not in extra_inputs:
+                        extra_inputs[v] = []
+                    extra_inputs[v].append(input.pop(k))
+            for idx, layer in enumerate(self._layer_specs):
+                prof = FlopsProfiler(layer)
+                prof.start_profile()
+                if idx == 0:
+                    input = layer(**input)
+                else:
+                    if idx in extra_inputs:
+                        input.extend(extra_inputs[idx])
+                    input = layer(*input)
+                flops = prof.get_total_flops()
+                # if dist.get_rank() == 0:
+                #     prof.print_model_profile()
+                # print_rank_0(flops)
+                mflops_list.append(round(flops / 10.0**6))
+                prof.end_profile()
+            from ..autopipe import pipeline
+            self.parts = pipeline(mflops_list, num_stages)
+            self.parts.append(len(self._layer_specs))
         else:
             raise NotImplementedError(f'Partitioning method {method} not implemented.')
 

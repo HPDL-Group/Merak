@@ -36,6 +36,7 @@ To install Merak:
 ```bash
 # ensure PyTorch >= 1.10 installed since it requires extra index url
 # (check https://pytorch.org/get-started/locally/)
+# ensure pybind11 installed
 git clone http://hpdl-group/Merak.git
 cd Merak
 pip install .

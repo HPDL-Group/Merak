@@ -17,7 +17,7 @@
 
 # using our distributed trainer
 import Merak
-from Merak import MerakArguments, MerakTrainer
+from Merak import MerakArguments, MerakTrainer, mpu
 from config import load_config
 
 from transformers import (
@@ -36,6 +36,8 @@ def parse_option(parser):
     parser.add_argument('--dataset-name', type=str, help='name of dataset from the datasets package')
     parser.add_argument('--model-name', type=str, help='gpt2 or t5-base')
     parser.add_argument('--validation-split-percentage', type=int, default=5, help='split data for validation')
+    parser.add_argument('--max-pred-length', type=int, default=20, help='max sequence length')
+    parser.add_argument('--warmup-proportion', type=float, default=0.1, help='Proportion of training to perform linear learning rate warmup for.')
 
     return parser
 
@@ -54,7 +56,8 @@ def main():
     set_seed(training_args.seed)
 
     # create dataset
-    train_dataset = HDF5Dataset(args, training_args.seed, max_pred_length=80)
+    train_dataset = HDF5Dataset(args, training_args.seed, json_file="./json_dir/data_info_{length}_{size}_{rank}.json".format(length=args.max_pred_length, size=mpu.get_data_parallel_world_size(),
+                                                                                                             rank=mpu.get_data_parallel_rank()), max_pred_length=args.max_pred_length)
 
     # set model config
     config_kwarg = load_config(args.model_name)

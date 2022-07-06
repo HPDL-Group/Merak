@@ -46,7 +46,7 @@ class WorkerInitObj(object):
         random.seed(self.seed + id)
 
 class HDF5Dataset(data.Dataset):
-    def __init__(self, args, seed, max_pred_length, json_file="./data_info.json", data_cache_size=1, transform=None):
+    def __init__(self, args, seed, max_pred_length, json_file="./", data_cache_size=1, transform=None):
         super().__init__()
         self.data_info = []
         self.data_cache = {}
@@ -57,7 +57,6 @@ class HDF5Dataset(data.Dataset):
         files = get_data_files(args, seed)
         self.num_files = len(files)
         self.file_idx = 0
-        self.samples = 0
         self.total_samples = 0
         self.inputs = None
         self.iter_idx = None
@@ -80,7 +79,6 @@ class HDF5Dataset(data.Dataset):
 
     def __getitem__(self, index):
         # get data
-        self.samples = self.get_data_infos()[self.file_idx]['length']
         if self.inputs is None:
             self.inputs, self.iter_idx = self.get_data(self.file_idx)
         try:
@@ -90,6 +88,7 @@ class HDF5Dataset(data.Dataset):
             if self.file_idx >= self.num_files:
                 self.file_idx = 0
             self.inputs, self.iter_idx = self.get_data(self.file_idx)
+            index = next(self.iter_idx)
 
         [input_ids, input_mask, segment_ids, masked_lm_positions, masked_lm_ids, next_sentence_labels] = [
             torch.from_numpy(input[index].astype(np.int64)) if indice < 5 else torch.from_numpy(

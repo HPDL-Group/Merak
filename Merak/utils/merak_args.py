@@ -209,19 +209,19 @@ class MerakArguments(TrainingArguments):
                           "Assumed when loading a release checkpoint."}
     )
     no_save_rng: bool = field(
-        default=True,
+        default=False,
         metadata={"help": "Do not save current rng state"}
     )
     no_save_optim: bool = field(
-        default=True,
+        default=False,
         metadata={"help": "Do not save current optimizer"}
     )
     no_load_optim: bool = field(
-        default=True,
+        default=False,
         metadata={"help": "Do not load optimizer when loading checkpoint."}
     )
     no_load_rng: bool = field(
-        default=True,
+        default=False,
         metadata={"help": "Do not load rng state when loading checkpoint."}
     )
 

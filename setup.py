@@ -27,6 +27,8 @@ from setuptools import setup, find_packages
 # To use a consistent encoding
 from codecs import open
 from os import path
+from glob import glob
+from pybind11.setup_helpers import intree_extensions
 
 here = path.abspath(path.dirname(__file__))
 
@@ -47,6 +49,13 @@ install_requires = [
     'datasets==2.0.0',
     'huggingface-hub==0.1.2',
 ]
+
+ext_cpp_modules_path = path.join(here, 'Merak/utils/csrc')
+
+ext_modules = intree_extensions(
+        glob(path.join(ext_cpp_modules_path, '*.cpp')),
+        {"Merak":ext_cpp_modules_path}
+)
 
 # https://stackoverflow.com/questions/458550/standard-way-to-embed-version-into-python-package/16084844#16084844
 # exec(open('Merak/version.py').read())
@@ -108,4 +117,6 @@ setup(
         # that you indicate whether you support Python 2, Python 3 or both.
         'Programming Language :: Python :: 3.6',
     ],
+
+    ext_modules=ext_modules,
 )
