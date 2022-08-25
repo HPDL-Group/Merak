@@ -130,7 +130,7 @@ def read_metadata(tracker_filename):
                   mpu.get_pipe_parallel_rank(), iteration, max_iter), flush=True)
     return max_iter, release
 
-def save_checkpoint(iteration, model, optimizer, lr_scheduler, args, epoch):
+def save_checkpoint(iteration, model, optimizer, lr_scheduler, args, **kwargs):
     """Save a model checkpoint."""
 
     # Only rank zero of the data parallel writes to the disk.
@@ -150,7 +150,9 @@ def save_checkpoint(iteration, model, optimizer, lr_scheduler, args, epoch):
         state_dict['checkpoint_version'] = 3.0
         state_dict['iteration'] = iteration
         state_dict['model'] = model.state_dict()
-        state_dict['epoch'] = epoch
+        if kwargs is not None and len(kwargs) != 0:
+            for k, v in kwargs:
+                state_dict[k] = v
 
         # Optimizer stuff.
         if not args.no_save_optim:
@@ -240,8 +242,6 @@ def load_checkpoint(model, optimizer, lr_scheduler, args, load_arg='load', stric
     # set checkpoint version
     set_checkpoint_version(state_dict.get('checkpoint_version', 0))
 
-    # load current epoch
-    epoch = state_dict['epoch']
 
     # Set iteration.
     if args.finetune or release:
@@ -284,7 +284,12 @@ def load_checkpoint(model, optimizer, lr_scheduler, args, load_arg='load', stric
     if not release and not args.finetune and not args.no_load_optim:
         try:
             if optimizer is not None:
-                optimizer.load_state_dict(state_dict['optimizer'])
+                if args.fp16:
+                    optimizer.load_state_dict(
+                        state_dict['optimizer'],
+                        load_optimizer_states=True)
+                else:
+                    optimizer.load_state_dict(state_dict['optimizer'])
             if lr_scheduler is not None:
                 lr_scheduler.load_state_dict(state_dict['lr_scheduler'])
         except KeyError:
@@ -320,7 +325,7 @@ def load_checkpoint(model, optimizer, lr_scheduler, args, load_arg='load', stric
     print_rank_0(f'  successfully loaded checkpoint from {args.resume_from_checkpoint} '
                  f'at iteration {iteration}')
 
-    return iteration, epoch
+    return iteration, state_dict
 
 
 def unwrap_model(model):

@@ -18,12 +18,24 @@ from torch.distributed.distributed_c10d import _get_global_rank
 from tensorboardX import SummaryWriter
 
 from .. import mpu
-from .utils import see_memory_usage
+from .utils import see_memory_usage, clip_grad_norm_
 from .config import DeepSpeedConfig
 from ..utils import logger, log_dist
 from ..utils.timer import ThroughputTimer, SynchronizedWallClockTimer
 from ..modules.module import PipelineModule
 from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
+
+from ..utils.fp16_optimizer import FP16_Optimizer
+
+try:
+    import apex
+    from apex import amp
+    APEX_INSTALLED = True
+except ImportError:
+    # will using torch.cuda.amp
+    APEX_INSTALLED = False
+# from torch.cuda.amp import autocast
+# from torch.cuda.amp.grad_scaler import GradScaler
 
 version = "0.0.0"
 
@@ -69,6 +81,7 @@ class DeepSpeedEngine(Module):
                  train_schedule='1f1b',
                  return_logits=False):
         super(DeepSpeedEngine, self).__init__()
+        self.args = args
         self.dont_change_device = dont_change_device
         self.client_optimizer = optimizer
         self.client_model_parameters = model_parameters
@@ -137,8 +150,15 @@ class DeepSpeedEngine(Module):
         self.training_dataloader = None
 
         # Configure optimizer and scheduler
-        self.optimizer = optimizer
-        self.lr_scheduler = lr_scheduler
+        if self.amp_enabled() or self.fp16_enabled():
+            # if self.args.half_precision_backend == "amp":
+            #     assert mpu.get_pipe_parallel_world_size() <= 1 and self.mp_world_size <= 1, "Currently not support model parallelism with native amp"
+            #     self.scaler = GradScaler()
+            self._configure_optimizer(optimizer, model_parameters)
+            self.lr_scheduler = lr_scheduler
+        else:
+            self.optimizer = optimizer
+            self.lr_scheduler = lr_scheduler
 
         if self.global_rank == 0:
             self._config.print('DeepSpeedEngine configuration')
@@ -184,6 +204,24 @@ class DeepSpeedEngine(Module):
 
         return SummaryWriter(log_dir=log_dir)
 
+    def fp16_enabled(self):
+        return self._config.fp16_enabled
+
+    # def bfloat16_enabled(self):
+    #     return self._config.bfloat16_enabled
+
+    def amp_enabled(self):
+        return self._config.amp_enabled
+
+    def amp_params(self):
+        return self._config.amp_params
+
+    def communication_data_type(self):
+        if self.fp16_enabled():
+            return torch.float16
+
+        return torch.float32
+
     def wall_clock_breakdown(self):
         return self._config.wall_clock_breakdown
 
@@ -210,6 +248,18 @@ class DeepSpeedEngine(Module):
 
     def gradient_clipping(self):
         return self._config.gradient_clipping
+
+    def dynamic_loss_scale(self):
+        return self._config.loss_scale == 0
+
+    def initial_dynamic_scale(self):
+        return self._config.initial_dynamic_scale
+
+    def dynamic_loss_scale_args(self):
+        return self._config.dynamic_loss_scale_args
+
+    def loss_scale(self):
+        return self._config.loss_scale
 
 
     def _set_distributed_vars(self):
@@ -282,15 +332,29 @@ class DeepSpeedEngine(Module):
     def _configure_distributed_model(self, model):
         self.module = model
 
-        if not all(
-            [param.dtype == torch.float for param in self.module.parameters()]):
-            names = [
-                n for n,
-                p in self.module.named_parameters() if p.dtype != torch.float
-            ]
-            raise ValueError(
-                f"fp32 is enabled but the following parameters have dtype that is not fp32: {', '.join(names)}"
-            )
+        if self.fp16_enabled():
+            self.module.half()
+            if not all(
+                    [param.dtype == torch.half for param in self.module.parameters()]):
+                    names = [
+                        n for n,
+                        p in self.module.named_parameters() if p.dtype != torch.half
+                    ]
+                    raise ValueError(
+                        f"fp16 is enabled but the following parameters have dtype that is not fp16: {', '.join(names)}"
+                    )
+        # elif self.bfloat16_enabled():
+        #     self.module.bfloat16()
+        else:
+            if not all(
+                [param.dtype == torch.float for param in self.module.parameters()]):
+                names = [
+                    n for n,
+                    p in self.module.named_parameters() if p.dtype != torch.float
+                ]
+                raise ValueError(
+                    f"fp32 is enabled but the following parameters have dtype that is not fp32: {', '.join(names)}"
+                )
 
         if not self.dont_change_device:
             self.module.to(self.device)
@@ -304,8 +368,94 @@ class DeepSpeedEngine(Module):
             self.broadcast_src_rank = _get_global_rank(
                 self.mpu.get_data_parallel_group(),
                 0)
+        if not self.args.half_precision_backend == "apex":
+            self._broadcast_model()
 
-        self._broadcast_model()
+    # Configure optimizer
+    def _configure_optimizer(self, client_optimizer, model_parameters):
+        if isinstance(client_optimizer, torch.optim.Optimizer):
+            client_optimizer.param_groups[:] = [
+                pg for pg in client_optimizer.param_groups if len(pg["params"]) != 0
+            ]
+            if self.global_rank == 0:
+                logger.info(
+                    "Removing param_group that has no 'params' in the client Optimizer"
+                )
+
+            basic_optimizer = client_optimizer
+            if self.global_rank == 0:
+                logger.info('Using client Optimizer as basic optimizer')
+        else:
+            basic_optimizer = client_optimizer(model_parameters)
+            if self.global_rank == 0:
+                logger.info('Using client callable to create basic optimizer')
+
+        self._check_for_duplicates(basic_optimizer)
+
+        self.basic_optimizer = basic_optimizer
+        if self.global_rank == 0:
+            logger.info("Basic Optimizer = {}".format(
+                basic_optimizer.__class__.__name__))
+
+        if self.amp_enabled() and self.args.half_precision_backend == "apex":
+            assert not self.fp16_enabled(), "Cannot enable both amp with (legacy) fp16 mode"
+            amp_params = self.amp_params()
+            if self.global_rank == 0:
+                logger.info(f"Initializing AMP with these params: {amp_params}")
+            try:
+                logger.info("Initializing Apex amp from: {}".format(amp.__path__))
+            except NameError:
+                # If apex/amp is available it will be imported above
+                raise RuntimeError(
+                    "Unable to import apex/amp, please make sure it is installed")
+            self.module, self.optimizer = amp.initialize(
+                self.module, basic_optimizer, **amp_params
+            )
+            self._broadcast_model()
+            # TODO: maybe need to broadcast experts differently?
+        elif self.fp16_enabled():
+            self.optimizer = self._configure_fp16_optimizer(basic_optimizer)
+        else:
+            self.optimizer = basic_optimizer
+            log_dist("Final Optimizer = {}".format(self.client_optimizer.__class__.__name__),
+                    ranks=[0])
+
+        self.quantizer = None
+
+    def _configure_fp16_optimizer(self, optimizer):
+        dynamic_loss_args = self.dynamic_loss_scale_args()
+        clip_grad = self.gradient_clipping()
+        if self.dynamic_loss_scale():
+            log_dist("Creating fp16 unfused optimizer with dynamic loss scale",
+                        ranks=[0])
+            optimizer = FP16_Optimizer(
+                optimizer,
+                deepspeed=self,
+                static_loss_scale=self.loss_scale(),
+                dynamic_loss_scale=self.dynamic_loss_scale(),
+                dynamic_loss_args=dynamic_loss_args,
+                mpu=self.mpu,
+                clip_grad=clip_grad,
+                fused_lamb_legacy=optimizer.__class__.__name__ == "lamb",
+            )
+
+        return optimizer
+
+    # check if parameters are duplicated in optimizer param_groups
+    def _check_for_duplicates(self, optimizer):
+        for name, param in self.module.named_parameters():
+            param_id = id(param)
+
+            def ids_list(group):
+                return [id(param) for param in group]
+
+            occurrence = sum([
+                ids_list(group['params']).count(param_id)
+                if param_id in ids_list(group['params']) else 0
+                for group in optimizer.param_groups
+            ])
+            assert occurrence <= 1, f"Parameter with name: {name} occurs multiple times in optimizer.param_groups. Make sure it only appears once to prevent undefined behaviour."
+
 
 
     @staticmethod
@@ -367,6 +517,21 @@ class DeepSpeedEngine(Module):
         if self.training_dataloader is None:
             self.tput_timer.start()
 
+        # onnx graph node test
+        # if mpu.get_data_parallel_rank() == 0:
+        #     torch.onnx.export(model=self.module,
+        #                       args=inputs,
+        #                       f="/dat/txacs/merak-final/merak/examples/language-modeling/test.onnx",
+        #                       verbose=True,
+        #                       export_params=True,
+        #                       do_constant_folding=False)
+        # torch.distributed.barrier()
+        # os._exit(0)
+
+        # if self.amp_enabled() and self.args.half_precision_backend == "amp":
+        #     with autocast(dtype=torch.float16):
+        #         loss = self.module(*inputs, **kwargs)
+        # else:
         loss = self.module(*inputs, **kwargs)
 
 
@@ -422,7 +587,21 @@ class DeepSpeedEngine(Module):
             self.timers('backward_inner_microstep').start()
             self.timers('backward_inner').start()
 
-        loss.backward()
+        if self.amp_enabled() and self.args.half_precision_backend == "apex":
+            # AMP requires delaying unscale when inside gradient accumulation boundaries
+            # https://nvidia.github.io/apex/advanced.html#gradient-accumulation-across-iterations
+            delay_unscale = not self.is_gradient_accumulation_boundary()
+            with amp.scale_loss(loss,
+                                self.optimizer,
+                                delay_unscale=delay_unscale) as scaled_loss:
+                scaled_loss.backward()
+        # elif self.amp_enabled() and self.args.half_precision_backend == "amp":
+        #     if not self.is_gradient_accumulation_boundary():
+        #         self.scaler.scale(loss).backward()
+        elif self.fp16_enabled():
+            self.optimizer.backward(loss)
+        else:
+            loss.backward()
 
         if self.wall_clock_breakdown():
             self.timers('backward_inner').stop()
@@ -469,12 +648,31 @@ class DeepSpeedEngine(Module):
 
     def _take_model_step(self, lr_kwargs, block_eigenvalue={}):
         if self.gradient_clipping() > 0.0:
-            self.clip_fp32_gradients()
-
+            if not (self.fp16_enabled() or self.amp_enabled()):
+                self.clip_fp32_gradients()
+            elif self.amp_enabled() and self.args.half_precision_backend == "apex":
+                # AMP's recommended way of doing clipping
+                # https://nvidia.github.io/apex/advanced.html#gradient-clipping
+                master_params = amp.master_params(self.optimizer)
+                clip_grad_norm_(parameters=master_params,
+                                max_norm=self.gradient_clipping(),
+                                mpu=self.mpu)
+            # elif self.amp_enabled() and self.args.half_precision_backend == "amp":
+            #     if hasattr(self.scaler, "_scale") and self.scaler._scale is not None:
+            #         self.scaler.unscale_(self.optimizer)
+            #         torch.nn.utils.clip_grad_norm_(parameters=self.module.parameters(),
+            #                                 max_norm=self.args.max_grad_norm)
+            #         self.scaler.step(self.optimizer)
+            #         self.scaler.update()
+            #         self.lr_scheduler.step(**(lr_kwargs or {}))
         self.optimizer.step()
 
         # Modified 
-        self.zero_grad()
+        if (not self.fp16_enabled()
+                and not self.amp_enabled()):
+            self.zero_grad()
+        else:
+            self.optimizer.zero_grad()
 
         report_progress = self.global_rank == 0 if self.global_rank else True
 
@@ -487,7 +685,7 @@ class DeepSpeedEngine(Module):
             self.skipped_steps += 1
         else:
             if self.lr_scheduler is not None:
-                self.lr_scheduler.step(**(lr_kwargs or {}))
+                    self.lr_scheduler.step(**(lr_kwargs or {}))
 
         if report_progress and (self.global_steps + 1) % self.steps_per_print() == 0:
             self._report_progress(self.global_steps + 1)
@@ -528,6 +726,9 @@ class DeepSpeedEngine(Module):
 
         tensor_to_allreduce = tensor
 
+        if self.communication_data_type() != tensor.dtype:
+            tensor_to_allreduce = tensor.to(self.communication_data_type())
+
         if self.postscale_gradients():
             if self.gradient_predivide_factor() != 1.0:
                 tensor_to_allreduce.mul_(1. / self.gradient_predivide_factor())
@@ -542,7 +743,7 @@ class DeepSpeedEngine(Module):
             tensor_to_allreduce.div_(self.dp_world_size)
             dist.all_reduce(tensor_to_allreduce, group=self.data_parallel_group)
 
-        if tensor is not tensor_to_allreduce:
+        if self.communication_data_type() != tensor.dtype and tensor is not tensor_to_allreduce:
             tensor.copy_(tensor_to_allreduce)
 
         return tensor

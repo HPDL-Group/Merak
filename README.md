@@ -24,7 +24,7 @@ limitations under the License.
 
 With the rapidly growing size of DNN models, exquisite distributed training solutions for giant models are required. However, using the SOTA technology of giant model pretraining: 3D parallelism (data parallelism, tensor model parallelism, pipeline model parallelism) needs much experiences and model rewriting.
 
-The motivation of Merak is to simplify the usage of 3D parallelism and ensure that users only need to add as little code as the popular training tool [Huggingface transformers trainer](https://huggingface.co/docs/transformers/master/en/main_classes/trainer#trainer) to achieve complicated 3D parallelism.
+The motivation of Merak is to simplify the usage of 3D parallelism and ensure that users only need to add as little code as the popular training tool [Huggingface transformers trainer](https://huggingface.co/docs/transformers/v4.15.0/en/main_classes/trainer#trainer) to achieve complicated 3D parallelism.
 
 
 
@@ -49,8 +49,8 @@ To use Merak, make the following modifications to your programs:
 
 1. Import Merak before import transformers and torch
 2. Set degrees of the data parallel, tensor model parallel and pipeline model parallel; and run `Merak.init(dp, tp, pp)` to initialize Merak.
-3. Set training arguments `MerakArguments`. Replacement of [transformers trainer arguments](https://huggingface.co/docs/transformers/master/en/main_classes/trainer#transformers.TrainingArguments)
-4. Set `MerakTrainer`. Replacement of [transformers trainer](https://huggingface.co/docs/transformers/master/en/main_classes/trainer#trainer).
+3. Set training arguments `MerakArguments`. Replacement of [transformers trainer arguments](https://huggingface.co/docs/transformers/v4.15.0/en/main_classes/trainer#transformers.TrainingArguments)
+4. Set `MerakTrainer`. Replacement of [transformers trainer](https://huggingface.co/docs/transformers/v4.15.0/en/main_classes/trainer#trainer).
 
 Example usage (see the Merak [examples](https://github.com/HPDL-Group/Merak/tree/main/examples) directory for full training examples):
 
@@ -83,7 +83,7 @@ trainer.train()
 ```
 
 For more details you could refer to our api [document](https://github.com/HPDL-Group/Merak/blob/main/docs/api_doc.md).
-For more detail usage, please check [transformers](https://github.com/huggingface/transformers) tutorials and its trainer [examples](https://github.com/huggingface/transformers/tree/master/examples/pytorch).
+For more detail usage, please check [transformers](https://github.com/huggingface/transformers/tree/v4.15.0/) tutorials and its trainer [examples](https://github.com/huggingface/transformers/tree/v4.15.0/examples/pytorch).
 
 
 ## Merak Features
@@ -92,7 +92,7 @@ For more detail usage, please check [transformers](https://github.com/huggingfac
 ### Automatic 3D parallel training
 In pipeline model parallelism of Merak, we uses `torch.fx` and `transformers.utils.fx` to trace a model into `GraphModule`. Then we come up with a graph sharding algorithm to split traced graph evenly into a sequence of `GraphModules`. For example, in the GPT model, each attention block and mlp block will be an individual module. Next a high performance runtime engine would allocate the module sequence and execute the training procedures.
 
-As for tensor model parallelism, we use a feature dict to map the parameters into `ColumnParallelLinear` and `RowParallelLinear` in [Megatron-LM](https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/mpu/layers.py). We hold default feature dicts for common models in `transformers` package. In addition, users could define a feature dict through our API easily to achieve the tensor model parallelism.
+As for tensor model parallelism, we use a feature dict to map the parameters into `ColumnParallelLinear` and `RowParallelLinear` in [Megatron-LM](https://github.com/NVIDIA/Megatron-LM/blob/806422e5ec35c27b027dbb413b05e27b6590dc56/megatron/mpu/layers.py). We hold default feature dicts for common models in `transformers` package. In addition, users could define a feature dict through our API easily to achieve the tensor model parallelism.
 
 -   Using as easy as single GPU training.
 
@@ -129,7 +129,7 @@ Please refer to our [paper](https://arxiv.org/abs/2206.04959) for more technical
 
 ## References
 
-The Merak source code was based off the  [transformers trainer](https://huggingface.co/docs/transformers/master/en/main_classes/trainer#trainer), [Deepspeed](https://github.com/microsoft/DeepSpeed) and [Megatron-LM](https://github.com/NVIDIA/Megatron-LM) repository.
+The Merak source code was based off the  [transformers trainer](https://huggingface.co/docs/transformers/v4.15.0/en/main_classes/trainer#trainer), [Deepspeed](https://github.com/microsoft/DeepSpeed) and [Megatron-LM](https://github.com/NVIDIA/Megatron-LM) repository.
 
 ## Cite Us
 ```

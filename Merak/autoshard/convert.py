@@ -82,7 +82,8 @@ def convert_to_sequential(model, args, extra_leaf_modules=(), trace_batch=None):
     transformers_fx_models = tuple(_SUPPORTED_MODELS+_SUPPORTED_MODELS_FOR_DYNAMIC_AXES+added_model)
     # print_rank_0(transformers_fx_models)
     if isinstance(model, transformers_fx_models):
-        model.cpu()
+        if not args.fp16:
+            model.cpu()
 
         if args.cache_sharding:
             assert args.cache_name is not None
@@ -145,6 +146,9 @@ def convert_to_sequential(model, args, extra_leaf_modules=(), trace_batch=None):
     gc.collect()
     torch.cuda.empty_cache()
     torch.cuda.synchronize()
+    result[0].dummy_inputs = dummy_inputs
+    if args.half_precision_backend != "apex":
+        torch.cuda.synchronize()
 
     if args.cache_sharding and isinstance(model, transformers_fx_models):
         if dist.get_rank() == 0:
@@ -158,7 +162,7 @@ def convert_to_sequential(model, args, extra_leaf_modules=(), trace_batch=None):
             dist.barrier()
         else:
             dist.barrier()
-    result[0].dummy_inputs = dummy_inputs
+
     # # test code
     # for i in result:
     #     if torch.distributed.get_rank() == 0:
@@ -205,8 +209,8 @@ class MpTracer(HFTracer):
     def _generate_dummy_input(self, model, input_name):
         """Generates dummy input for model inference recording."""
         model_class = model.__class__
-        # device = model.device
-        device = 'cpu'
+        device = model.device
+        # device = 'cpu'
         inputs_dict = dict()
         if self.trace_batch is not None:
             return self.trace_batch

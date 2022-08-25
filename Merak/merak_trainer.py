@@ -15,11 +15,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import torch
 import torchvision
 import torch.distributed as dist
+from torch.utils.data import DataLoader
 import gc
 import importlib
+import warnings
 
 from . import print_rank_0, get_grid, get_topo, get_patched_func
 from . import mpu
@@ -38,6 +41,7 @@ from .runtime.pipe_engine import PipelineEngine
 from .utils.merak_args import mergeargs, MerakArguments, manual_set_args
 from .utils.dataloader import MegatronPretrainingRandomSampler
 from .utils.logging import AccMetric, log_dist
+from .utils.checkpoint import save_checkpoint, load_checkpoint
 
 from .autoshard.convert import convert_to_sequential, hf_fx_compatibility
 
@@ -48,6 +52,9 @@ import datasets
 from transformers.modeling_utils import PreTrainedModel, unwrap_model
 from transformers.file_utils import is_datasets_available
 from transformers import Trainer
+from transformers.trainer_pt_utils import (
+    IterableDatasetShard,
+)
 
 
 
@@ -84,6 +91,9 @@ class MerakTrainer(Trainer):
             mergeargs(self.args, self.model.config)
         else:
             mergeargs(self.args, self.model)
+
+        if self.args.fp16:
+            self.model = self.model.half()
 
         assert dist.get_world_size() == self.pp*self.mp*self.dp, 'pp*tp*dp must equal to world size'
 
@@ -222,7 +232,7 @@ class MerakTrainer(Trainer):
         def build_module(model, proxy_layer, init_args):
             for n, module in model.named_children():
                 if isinstance(module, proxy_layer):
-                    setattr(model, n, module.build(init_args))
+                    setattr(model, n, module.build(init_args, self.args.fp16))
                 if len(list(module.children())) > 0:
                     ## compound module, go inside it
                     build_module(module, proxy_layer, init_args)
@@ -293,6 +303,8 @@ class MerakTrainer(Trainer):
                             "gradient_predivide_factor": self.args.gradient_predivide_factor,
                             }
 
+        deepspeed_config = self.amp_config(deepspeed_config)
+
         self.pipe_model = PipelineEngine(args=self.args,
                                 model=pipe_model,
                                 optimizer=self.optimizer,
@@ -315,9 +327,9 @@ class MerakTrainer(Trainer):
         self.model = self.pipe_model
         self.model.config = hf_config
         
-    def training_step(self, model, inputs):
+    def training_step(self, iter_dataloader):
 
-        loss = self.pipe_model.train_batch(self.iter_dataloader)
+        loss = self.pipe_model.train_batch(iter_dataloader)
         return loss.detach()
 
 
@@ -374,6 +386,35 @@ class MerakTrainer(Trainer):
             num_workers=self.args.dataloader_num_workers,
             pin_memory=self.args.dataloader_pin_memory,
         )
+
+    def _get_iter_dataloader(self):
+        if self.args.split_inputs:
+            from .utils.dataloader import DistributedDataset
+            DD = DistributedDataset(self.pipe_model, self.train_dataset, self.input_to_stage_dic, self.data_collator, self.args)
+            self.iter_dataloader = DD.get_dataloader()
+            self.len_dataset = DD.len_dataset
+        else:
+            self.iter_dataloader = self.get_train_dataloader()
+
+    def _reset_dataloader(self, epoch):
+        if epoch == 0:
+            pass
+        elif epoch > 0:
+            if self.iter_dataloader is not None:
+                del self.iter_dataloader
+            self._get_iter_dataloader()
+        else:
+            raise ValueError("Invalid Epoch numbers, unexpected epoch = {}".format(epoch))
+
+        # reset random seed according to epoch
+        if self.iter_dataloader and isinstance(self.iter_dataloader, DataLoader) and hasattr(self.iter_dataloader.batch_sampler, 'set_epoch'):
+            self.iter_dataloader.batch_sampler.set_epoch(epoch)
+        elif self.iter_dataloader and isinstance(self.iter_dataloader.dataset, IterableDatasetShard):
+            self.iter_dataloader.dataset.set_epoch(epoch)
+
+        if epoch > 0:
+            self.pipe_model.reset_dataiterator(self.iter_dataloader)
+
 
     def get_eval_dataloader(self):
         if self.eval_dataset is None:
@@ -488,6 +529,51 @@ class MerakTrainer(Trainer):
             loss = criterion(outputs.view(-1, outputs.size(-1)), labels.view(-1))
             return loss
         return loss_fn
+
+    def amp_config(self, deepspeed_config):
+
+        if self.args.fp16:
+            self.args.half_precision_backend = "auto"
+            fp16_var = {
+                        "enabled": True,
+                        "loss_scale": self.args.loss_scale,
+                        "initial_scale_power": self.args.initial_scale_power,
+                        "loss_scale_window": self.args.loss_scale_window,
+                        "hysteresis": self.args.hysteresis,
+                        "min_loss_scale": self.args.min_loss_scale,
+            }
+            deepspeed_config["fp16"] = fp16_var
+        elif self.args.half_precision_backend != "auto":
+            if self.args.half_precision_backend == "apex":
+                # apex or amp config
+                if self.args.fp16_opt_level in ["O2", "O3"]:
+                    warnings.warn("Merak is not surpport 'fp16_opt_level' to set 'O2' or 'O3' when using apex, so cast it to O1 ")
+                amp_var = {
+                        "enabled": True,
+                        "opt_level": "O1",
+                        }
+            # elif self.args.half_precision_backend == "amp":
+            #     amp_var = {
+            #             "enabled": True
+            #             }
+            deepspeed_config["amp"] = amp_var
+
+        return deepspeed_config
+
+    def load_from_checkpoint(self, resume_from_checkpoint):
+        if os.path.exists(resume_from_checkpoint):
+            iteration, state_dict = load_checkpoint(self.pipe_model, self.optimizer, self.lr_scheduler, self.args)
+            del state_dict
+
+        else:
+            raise ValueError("Cannot find checkpoint files")
+
+        return iteration
+
+    def save_to_checkpoint(self):
+        kwargs = None
+        save_checkpoint(self.state.global_step, self.pipe_model, self.optimizer, self.lr_scheduler, self.args, **kwargs)
+
 
 # monkey patch for train function
 MerakTrainer.train = train

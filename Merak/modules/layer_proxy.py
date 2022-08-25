@@ -66,9 +66,12 @@ class LinearProxy(nn.Module):
             self.register_parameter('bias', None)
 
 
-    def build(self, init_args):
+    def build(self, init_args, fp16):
         if self.mp_attr == ' ':
-            return torch.nn.Linear(*self.module_args).cuda()
+            if fp16:
+                return torch.nn.Linear(*self.module_args).cuda().half()
+            else:
+                return torch.nn.Linear(*self.module_args).cuda()
         if self.mp_attr.startswith('row'):
             init_method = scaled_init_method_normal(*init_args)
             if self.mp_attr == 'row_mlp':
@@ -122,9 +125,12 @@ class Conv1DProxy(nn.Module):
         self.bias = NumelParameter(torch.zeros(1))
         self.bias.num_element = lambda: self.out_features
     
-    def build(self, init_args):
+    def build(self, init_args, fp16):
         if self.mp_attr == ' ':
-            return transformers.modeling_utils.Conv1D(*self.module_args)
+            if fp16:
+                return transformers.modeling_utils.Conv1D(*self.module_args).cuda().half()
+            else:
+                return transformers.modeling_utils.Conv1D(*self.module_args).cuda()
         if self.mp_attr.startswith('row'):
             init_method = scaled_init_method_normal(*init_args)
             if self.mp_attr == 'row_mlp':

@@ -62,12 +62,12 @@ def main():
 
     # create tokenizer
     tokenizer = create_tokenizer(args.cache_dir, args.model_name, config)
-    
-    # create dataset
-    dataset = Prepare_data(tokenizer, input_length=512, output_length=512)
 
     # create model
     model = T5ForConditionalGeneration(config)
+
+    # create dataset
+    dataset = Prepare_data(tokenizer, input_length=512, output_length=512)
 
     trainer = MerakTrainer(
         model=model,
@@ -75,7 +75,7 @@ def main():
         train_dataset=dataset,
         eval_dataset=dataset, 
         # Data collator will default to DataCollatorWithPadding, so we change it.
-        data_collator=default_data_collator
+        data_collator=default_data_collator,
     )
 
     # Training

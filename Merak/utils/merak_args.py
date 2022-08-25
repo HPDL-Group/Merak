@@ -33,7 +33,10 @@ _GLOBAL_ARGS = None
 def manual_set_args(args):
     global _GLOBAL_ARGS
     # some args for megatron
-    args.params_dtype = torch.float32
+    if args.fp16:
+        args.params_dtype = torch.half
+    else:
+        args.params_dtype = torch.float32
     args.use_cpu_initialization = False
     _GLOBAL_ARGS = args
 
@@ -126,6 +129,14 @@ class MerakArguments(TrainingArguments):
                                                                  "2 refers to overlap within transformer blocks, requires rewrite transformer blocks;"
                                                                  "3 refers to overlap between transformer blocks, requires rewrite transformer model.",
                                                                  "choices": [0,1,2,3]
+    -   loss_scale (float, defaults to 0) -- 'loss_scale is a fp16 parameter representing the loss scaling value for FP16 training.'
+                                             'The default value of 0.0 results in dynamic loss scaling, '
+                                             'otherwise the value will be used for static fixed loss scaling.'
+    -   initial_scale_power (int, defaults to 32) -- 'initial_scale_power is a fp16 parameter representing the power of the initial dynamic loss scale value.'
+                                                     'The actual loss scale is computed as 2^initial_scale_power.'
+    -   loss_scale_window (int, defaults to 1000) -- 'loss_scale_window is a fp16 parameter representing the window over which to raise/lower the dynamic loss scale value.'
+    -   hysteresis (int, defaults to 2) -- 'hysteresis is a fp16 parameter representing the delay shift in dynamic loss scaling.'
+    -   min_loss_scale (int, defaults to 1) -- 'min_loss_scale is a fp16 parameter representing the minimum dynamic loss scale value.'
     """
 
     train_schedule: str = field(
@@ -248,6 +259,31 @@ class MerakArguments(TrainingArguments):
                     "3 refers to overlap between transformer blocks, requires rewrite transformer model.",
             "choices": [0,1,2,3],
         },
+    )
+    loss_scale: float = field(
+        default=0.,
+        metadata={"help": 'loss_scale is a fp16 parameter representing the loss scaling value for FP16 training.'
+                          'The default value of 0.0 results in dynamic loss scaling, '
+                          'otherwise the value will be used for static fixed loss scaling.'
+        }
+    )
+    initial_scale_power: int = field(
+        default=32,
+        metadata={"help": 'initial_scale_power is a fp16 parameter representing the power of the initial dynamic loss scale value.'
+                          'The actual loss scale is computed as 2^initial_scale_power.'
+        }
+    )
+    loss_scale_window: int = field(
+        default=1000,
+        metadata={"help": 'loss_scale_window is a fp16 parameter representing the window over which to raise/lower the dynamic loss scale value.'}
+    )
+    hysteresis: int = field(
+        default=2,
+        metadata={"help": 'hysteresis is a fp16 parameter representing the delay shift in dynamic loss scaling.'}
+    )
+    min_loss_scale: int = field(
+        default=1,
+        metadata={"help": 'min_loss_scale is a fp16 parameter representing the minimum dynamic loss scale value.'}
     )
 
 

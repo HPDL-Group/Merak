@@ -39,8 +39,8 @@ def parse_option(parser):
 
 def main():
     # init dist
-    pp = 4
-    tp = 2
+    pp = 2
+    tp = 1
     dp = 2
     Merak.init(pp, tp, dp)
 
@@ -49,7 +49,7 @@ def main():
     parser = parse_option(hfparser)
     training_args, args = parser.parse_args_into_dataclasses()
 
-    config = ViTConfig(num_labels=1000)
+    config = ViTConfig(num_labels=1000, return_dict=False)
     model = ViTForImageClassification(config)
     feature_extractor = ViTFeatureExtractor(image_mean=[0.5, 0.5, 0.5], image_std=[0.5, 0.5, 0.5])
 

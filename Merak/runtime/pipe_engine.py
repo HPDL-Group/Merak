@@ -146,6 +146,8 @@ class PipelineEngine(DeepSpeedEngine):
                 # else:
                 #     ## full critical path schedule only support stage > 2 for
                 #     TrainScheduleClass = schedule.LastNoRecomputeTrainSchedule
+            else:
+                raise NotImplementedError(f' train schedule {self.train_schedule} not supported.')
 
         self.train_sched = TrainScheduleClass(micro_batches=self.micro_batches,
                                        stages=self.num_stages,
@@ -541,6 +543,10 @@ class PipelineEngine(DeepSpeedEngine):
         self.training_dataloader = None
         self.data_iterator = iterator
 
+    def reset_dataiterator(self, iterator):
+        del self.data_iterator
+        self.data_iterator = iterator
+
     def set_batch_fn(self, fn):
         self.batch_fn = fn
 
@@ -577,11 +583,8 @@ class PipelineEngine(DeepSpeedEngine):
         if self.data_iterator is not None:
             if not isgenerator(self.data_iterator):
                 self.data_iterator = iter(self.data_iterator)
-            try:
-                batch = next(self.data_iterator)
-            except StopIteration:
-                self.data_iterator = iter(self.training_dataloader)
-                batch = next(self.data_iterator)
+
+            batch = next(self.data_iterator)
 
         if self.batch_fn:
             batch = self.batch_fn(batch)
@@ -844,9 +847,13 @@ class PipelineEngine(DeepSpeedEngine):
             self._send_tensor_meta(outputs, self.next_stage)
 
         if isinstance(outputs, torch.Tensor):
+            if not self.is_last_stage() and outputs.dtype != self.communication_data_type():
+                outputs = outputs.to(self.communication_data_type())
             send_forward(outputs)
         elif isinstance(outputs, tuple):
             for idx, buffer in enumerate(outputs):
+                if not self.is_last_stage() and buffer.dtype != self.communication_data_type():
+                    buffer = buffer.to(self.communication_data_type())
                 send_forward(buffer)
         else:
             raise NotImplementedError('Could not send output of type '
@@ -1025,9 +1032,15 @@ class PipelineEngine(DeepSpeedEngine):
                 self.grad_layer = self._allocate_buffers(sizes, num_buffers=1)[0]
         # print('before', self.global_rank, self.grad_layer)
         if isinstance(self.grad_layer, torch.Tensor):
+            if not self.is_last_stage() and activations.dtype != self.communication_data_type():
+                activations = activations.to(self.communication_data_type())
             send_forward_recv_backward(activations, self.grad_layer)
         else:
             assert isinstance(outputs, tuple)
+            activations_list = []
+            for idx, values in enumerate(activations):
+                activations_list.append(values.to(self.communication_data_type()))
+            activations = tuple(activations_list)
             for idx, buffer in enumerate(self.grad_layer):
                 send_forward_recv_backward(activations[idx], buffer)
 
@@ -1197,7 +1210,7 @@ class PipelineEngine(DeepSpeedEngine):
                 if t.grad is not None:
                     t.grad.data.zero_()
 
-    def _allocate_zeros(self, shape, fp16=None, **kwargs):
+    def _allocate_zeros(self, shape, **kwargs):
         """ Allocate a tensor of zeros on the engine's device.
 
         Arguments:
@@ -1208,6 +1221,8 @@ class PipelineEngine(DeepSpeedEngine):
         Returns:
             A tensor from torch.zeros() allocated on self.device.
         """
+        if "dtype" not in kwargs and self.fp16_enabled():
+            kwargs["dtype"] = torch.half
 
         return torch.zeros(shape, device=self.device, **kwargs)
 

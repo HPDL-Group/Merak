@@ -14,6 +14,11 @@ import copy
 from .config_utils import get_scalar_param, dict_raise_error_on_duplicate_keys, ScientificNotationEncoder, DeepSpeedConfigObject
 from ..utils import logger
 
+INITIAL_LOSS_SCALE = 'init_scale'
+SCALE_WINDOW = 'scale_window'
+DELAYED_SHIFT = 'delayed_shift'
+MIN_LOSS_SCALE = 'min_scale'
+
 TENSOR_CORE_ALIGN_SIZE = 8
 
 #############################################
@@ -156,6 +161,85 @@ TENSORBOARD_OUTPUT_PATH_DEFAULT = ""
 TENSORBOARD_JOB_NAME = "job_name"
 TENSORBOARD_JOB_NAME_DEFAULT = "MerakJobName"
 
+#########################################
+# BFLOAT16 support
+#########################################
+# BFLOAT16 feature. By default, this feature is not enabled.
+# Users can configure in ds_config.json as below example:
+BFLOAT16_FORMAT = '''
+BFLOAT16 parameters should be of the format:
+"bfloat16": {
+  "enabled": true
+}
+'''
+BFLOAT16 = "bfloat16"
+
+BFLOAT16_ENABLED = "enabled"
+BFLOAT16_ENABLED_DEFAULT = False
+
+#########################################
+# FP16 support
+#########################################
+# FP16 feature. By default, this feature is not enabled.
+# Users can configure in ds_config.json as below example:
+FP16_FORMAT = '''
+FP16 parameters should be of the format:
+"fp16": {
+  "enabled": true,
+  "loss_scale": 0,
+  "initial_scale_power": 32,
+  "loss_scale_window": 1000,
+  "hysteresis": 2,
+  "min_loss_scale": 1
+}
+'''
+FP16 = "fp16"
+
+FP16_ENABLED = "enabled"
+FP16_ENABLED_DEFAULT = False
+
+# FP16 loss scale, zero means using dynamic scaling
+FP16_LOSS_SCALE = "loss_scale"
+FP16_LOSS_SCALE_DEFAULT = 0
+
+# FP16 initial dynamic scale loss power
+FP16_INITIAL_SCALE_POWER = "initial_scale_power"
+FP16_INITIAL_SCALE_POWER_DEFAULT = 32
+
+# FP16 loss scale window
+FP16_LOSS_SCALE_WINDOW = "loss_scale_window"
+FP16_LOSS_SCALE_WINDOW_DEFAULT = 1000
+
+# FP16 hysteresis
+FP16_HYSTERESIS = "hysteresis"
+FP16_HYSTERESIS_DEFAULT = 2
+
+# FP16 min loss scale
+FP16_MIN_LOSS_SCALE = "min_loss_scale"
+FP16_MIN_LOSS_SCALE_DEFAULT = 1
+
+# FP16 master and grads
+FP16_MASTER_WEIGHTS_AND_GRADS = "fp16_master_weights_and_grads"
+FP16_MASTER_WEIGHTS_AND_GRADS_DEFAULT = False
+
+#########################################
+# Apex AMP support
+#########################################
+# Use Apex AMP for mixed precision support, all parameters (other than 'enabled') will be passed to
+# amp.initialize(model, optimizer, **amp_params)
+# See apex documentation for supported parameters/features: https://nvidia.github.io/apex/amp.html#apex.amp.initialize
+AMP_FORMAT = '''
+"amp" {
+  "enabled: true,
+  "opt_level": "O1",
+  ...
+}
+'''
+AMP = "amp"
+
+AMP_ENABLED = "enabled"
+AMP_ENABLED_DEFAULT = False
+
 class DeepSpeedConfigError(Exception):
     pass
 
@@ -240,6 +324,90 @@ def get_tensorboard_job_name(param_dict):
         return TENSORBOARD_JOB_NAME_DEFAULT
 
 
+def get_amp_enabled(param_dict):
+    if AMP in param_dict.keys():
+        return get_scalar_param(param_dict[AMP], AMP_ENABLED, AMP_ENABLED_DEFAULT)
+    else:
+        return False
+
+
+def get_amp_params(param_dict):
+    if AMP in param_dict.keys():
+        amp_params = copy.copy(param_dict[AMP])
+        amp_params.pop(AMP_ENABLED)
+        return amp_params
+    else:
+        return False
+
+
+def get_fp16_enabled(param_dict):
+    if FP16 in param_dict.keys():
+        return get_scalar_param(param_dict[FP16], FP16_ENABLED, FP16_ENABLED_DEFAULT)
+    else:
+        return False
+
+
+# def get_bfloat16_enabled(param_dict):
+#     if BFLOAT16 in param_dict.keys():
+#         return get_scalar_param(param_dict[BFLOAT16],
+#                                 BFLOAT16_ENABLED,
+#                                 BFLOAT16_ENABLED_DEFAULT)
+#     else:
+#         return False
+
+
+def get_loss_scale(param_dict):
+    if get_fp16_enabled(param_dict):
+        return get_scalar_param(param_dict[FP16],
+                                FP16_LOSS_SCALE,
+                                FP16_LOSS_SCALE_DEFAULT)
+    else:
+        return FP16_LOSS_SCALE_DEFAULT
+
+
+def get_initial_dynamic_scale(param_dict):
+    if get_fp16_enabled(param_dict):
+        initial_scale_power = get_scalar_param(param_dict[FP16],
+                                               FP16_INITIAL_SCALE_POWER,
+                                               FP16_INITIAL_SCALE_POWER_DEFAULT)
+    else:
+        initial_scale_power = FP16_INITIAL_SCALE_POWER_DEFAULT
+
+    return 2**initial_scale_power
+
+
+def get_dynamic_loss_scale_args(param_dict):
+    loss_scale_args = None
+    if get_fp16_enabled(param_dict):
+        fp16_dict = param_dict[FP16]
+        dynamic_loss_args = [
+            FP16_INITIAL_SCALE_POWER,
+            FP16_LOSS_SCALE_WINDOW,
+            FP16_MIN_LOSS_SCALE,
+            FP16_HYSTERESIS,
+        ]
+        if any(arg in list(fp16_dict.keys()) for arg in dynamic_loss_args):
+            init_scale = get_scalar_param(fp16_dict,
+                                          FP16_INITIAL_SCALE_POWER,
+                                          FP16_INITIAL_SCALE_POWER_DEFAULT)
+            scale_window = get_scalar_param(fp16_dict,
+                                            FP16_LOSS_SCALE_WINDOW,
+                                            FP16_LOSS_SCALE_WINDOW_DEFAULT)
+            delayed_shift = get_scalar_param(fp16_dict,
+                                             FP16_HYSTERESIS,
+                                             FP16_HYSTERESIS_DEFAULT)
+            min_loss_scale = get_scalar_param(fp16_dict,
+                                              FP16_MIN_LOSS_SCALE,
+                                              FP16_MIN_LOSS_SCALE_DEFAULT)
+            loss_scale_args = {
+                INITIAL_LOSS_SCALE: 2**init_scale,
+                SCALE_WINDOW: scale_window,
+                DELAYED_SHIFT: delayed_shift,
+                MIN_LOSS_SCALE: min_loss_scale,
+            }
+
+    return loss_scale_args
+
 '''Write deepspeed config files by modifying basic templates.
 Can be used for quicly changing parameters via command line parameters.'''
 
@@ -300,6 +468,18 @@ class DeepSpeedConfig(object):
         self.prescale_gradients = get_prescale_gradients(param_dict)
         self.gradient_predivide_factor = get_gradient_predivide_factor(param_dict)
         self.gradient_clipping = get_gradient_clipping(param_dict)
+
+        self.fp16_enabled = get_fp16_enabled(param_dict)
+        # self.bfloat16_enabled = get_bfloat16_enabled(param_dict)
+        # assert not (self.fp16_enabled and self.bfloat16_enabled), 'bfloat16 and fp16 modes cannot be simultaneously enabled'
+        # self.fp16_master_weights_and_gradients = get_fp16_master_weights_and_grads_enabled(
+        #     param_dict)
+        self.amp_enabled = get_amp_enabled(param_dict)
+        self.amp_params = get_amp_params(param_dict)
+        self.loss_scale = get_loss_scale(param_dict)
+        self.initial_dynamic_scale = get_initial_dynamic_scale(param_dict)
+        self.dynamic_loss_scale_args = get_dynamic_loss_scale_args(param_dict)
+
         self.wall_clock_breakdown = get_wall_clock_breakdown(
               param_dict)
         self.tensorboard_enabled = get_tensorboard_enabled(param_dict)

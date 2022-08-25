@@ -27,6 +27,7 @@
 events.out.tfevents*
 model.ckpt*
 *.pbtxt
+*.pt
 checkpoint
 eval
 weight-decay
@@ -41,6 +42,8 @@ tensorboard
 *.out
 *.txt
 *.eps
+*.json
+*.onnx
 
 # shell script
 *.sh

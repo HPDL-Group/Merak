@@ -18,7 +18,6 @@
 # Parts of the code here are adapted from https://github.com/huggingface/transformers/blob/v4.15.0/src/transformers/trainer.py
 
 import torch
-from torch.utils.data import DataLoader
 from transformers.trainer_utils import (
     TrainOutput,
     set_seed,
@@ -38,7 +37,6 @@ import os
 import warnings
 import sys
 import time
-from .utils.checkpoint import save_checkpoint, load_checkpoint
 from . import mpu, print_rank_0
 
 # Name of the files used for checkpointing
@@ -145,29 +143,9 @@ def train(
     if model is not self.model:
         self.model_wrapped = model
 
-    # load checkpoint
-    epochs_trained = 0
-    if resume_from_checkpoint:
-        if os.path.exists(resume_from_checkpoint):
-            iteration, epochs_trained = load_checkpoint(self.pipe_model, self.optimizer, self.lr_scheduler, self.args)
-            if self.args.max_steps > 0 and iteration > self.args.max_steps:
-                self.state.global_step = 0
-                self.pipe_model.global_steps = 0
-                epochs_trained = 0
-            else:
-                self.state.global_step = iteration
-                self.pipe_model.global_steps = iteration
-        else:
-            raise ValueError("Cannot find checkpoint files")
-
     # Data loader and number of training steps
-
-    if self.args.split_inputs:
-        from .utils.dataloader import DistributedDataset
-        DD = DistributedDataset(self.pipe_model, self.train_dataset, self.input_to_stage_dic, self.data_collator, self.args)
-        self.iter_dataloader = DD.get_dataloader()
-    else:
-        self.iter_dataloader = self.get_train_dataloader()
+    self.len_dataset = None
+    self._get_iter_dataloader()
 
     # Setting up training control variables:
     # number of training epochs: num_train_epochs
@@ -189,7 +167,8 @@ def train(
                 if self.train_dataset is not None:
                     num_train_samples = len(self.train_dataset) * args.num_train_epochs
         else:
-            num_update_steps_per_epoch = DD.len_dataset // ( args.per_device_train_batch_size * args.gradient_accumulation_steps)
+            assert self.len_dataset is not None, "Length of datasets or dataloader could not be None"
+            num_update_steps_per_epoch = self.len_dataset // ( args.per_device_train_batch_size * args.gradient_accumulation_steps)
             if args.max_steps < 0:
                 max_steps = math.ceil(args.num_train_epochs * len(self.train_dataset) // 
                                         (args.train_batch_size * args.gradient_accumulation_steps * mpu.get_data_parallel_world_size()))
@@ -201,6 +180,27 @@ def train(
         num_update_steps_per_epoch = max_steps
         num_train_samples = args.max_steps * total_train_batch_size
     num_steps_per_epoch = max_steps // num_train_epochs
+
+    # load checkpoint
+    epochs_trained = 0
+    if resume_from_checkpoint:
+        iteration = self.load_from_checkpoint(resume_from_checkpoint)
+        if self.args.max_steps > 0:
+            if iteration < self.args.max_steps:
+                epochs_trained = int(iteration/num_steps_per_epoch)
+        else:
+            if iteration < max_steps:
+                epochs_trained = int(iteration/num_steps_per_epoch)
+
+        if self.args.max_steps > 0 and iteration > self.args.max_steps:
+            self.state.global_step = 0
+            self.pipe_model.global_steps = 0
+        elif iteration > max_steps:
+            self.state.global_step = 0
+            self.pipe_model.global_steps = 0
+        else:
+            self.state.global_step = iteration
+            self.pipe_model.global_steps = iteration
 
     # Train!
     if self.iter_dataloader is not None and torch.distributed.get_rank()==0:
@@ -251,14 +251,8 @@ def train(
                 break
 
     for epoch in range(epochs_trained, num_train_epochs):
-        if self.iter_dataloader and isinstance(self.iter_dataloader, DataLoader) and hasattr(self.iter_dataloader.batch_sampler, 'set_epoch'):
-            self.iter_dataloader.batch_sampler.set_epoch(epoch)
-        elif self.iter_dataloader and isinstance(self.iter_dataloader.dataset, IterableDatasetShard):
-            self.iter_dataloader.dataset.set_epoch(epoch)
+        self._reset_dataloader(epoch)
         print_rank_0("Current processing of training epoch (%d/%d)" % (epoch + 1, num_train_epochs))
-
-
-        # epoch_iterator = train_dataloader
 
         # Reset the past mems state at the beginning of each epoch if necessary.
         if args.past_index >= 0:
@@ -270,7 +264,7 @@ def train(
         self.control = self.callback_handler.on_epoch_begin(args, self.state, self.control)
         
 
-        for step, inputs in enumerate(epoch_iterator):
+        for step, _ in enumerate(epoch_iterator):
             # Skip past any already trained steps if resuming training
             if steps_trained_in_current_epoch > 0:
                 steps_trained_in_current_epoch -= 1
@@ -283,7 +277,7 @@ def train(
 
             self.control = self.callback_handler.on_step_begin(args, self.state, self.control)
 
-            tr_loss_step = self.training_step(model, inputs)
+            tr_loss_step = self.training_step(self.iter_dataloader)
 
             if args.logging_nan_inf_filter and (torch.isnan(tr_loss_step) or torch.isinf(tr_loss_step)):
                 # if loss is nan or inf simply add the average of previous logged losses
@@ -296,6 +290,9 @@ def train(
             self.control = self.callback_handler.on_step_end(args, self.state, self.control)
             self._maybe_log_save_evaluate(tr_loss, model, trial, epoch, ignore_keys_for_eval)
                 
+            if self.args.output_dir and self.args.save and self.state.global_step % self.args.save_steps == 0:
+                self.save_to_checkpoint()
+
 
             if self.control.should_epoch_stop or self.control.should_training_stop:
                 break
@@ -304,7 +301,7 @@ def train(
         self.control = self.callback_handler.on_epoch_end(args, self.state, self.control)
         self._maybe_log_save_evaluate(tr_loss, model, trial, epoch, ignore_keys_for_eval)
         if self.args.output_dir and self.args.save:
-            save_checkpoint(self.state.global_step, self.pipe_model, self.optimizer, self.lr_scheduler, self.args, epoch + 1)
+            self.save_to_checkpoint()
 
         if self.control.should_training_stop:
             break

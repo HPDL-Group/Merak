@@ -46,20 +46,22 @@ class WorkerInitObj(object):
         random.seed(self.seed + id)
 
 class HDF5Dataset(data.Dataset):
-    def __init__(self, args, seed, max_pred_length, json_file="./", data_cache_size=1, transform=None):
+    def __init__(self, args, training_args, max_pred_length, json_file="./", data_cache_size=1, transform=None):
         super().__init__()
         self.data_info = []
-        self.data_cache = {}
+        self.data_cache = None
         self.data_cache_size = data_cache_size
         self.transform = transform
         self.max_pred_length = max_pred_length
 
-        files = get_data_files(args, seed)
+        files = get_data_files(args, training_args.seed)
         self.num_files = len(files)
         self.file_idx = 0
         self.total_samples = 0
         self.inputs = None
         self.iter_idx = None
+
+        self.num_workers = training_args.dataloader_num_workers
 
         if len(files) < 1:
             raise RuntimeError('No hdf5 datasets found')
@@ -79,16 +81,16 @@ class HDF5Dataset(data.Dataset):
 
     def __getitem__(self, index):
         # get data
+        worker_id = torch.utils.data.get_worker_info().id
         if self.inputs is None:
-            self.inputs, self.iter_idx = self.get_data(self.file_idx)
+            self.get_data(self.file_idx*self.num_workers+worker_id)
         try:
             index = next(self.iter_idx)
         except StopIteration:
             self.file_idx += 1
-            if self.file_idx >= self.num_files:
-                self.file_idx = 0
-            self.inputs, self.iter_idx = self.get_data(self.file_idx)
+            self.get_data((self.file_idx*self.num_workers+worker_id)%self.num_files)
             index = next(self.iter_idx)
+            # self.count = 0
 
         [input_ids, input_mask, segment_ids, masked_lm_positions, masked_lm_ids, next_sentence_labels] = [
             torch.from_numpy(input[index].astype(np.int64)) if indice < 5 else torch.from_numpy(
@@ -139,11 +141,8 @@ class HDF5Dataset(data.Dataset):
         """Adds data to the cache and returns its index. There is one cache
         list for every file_path, containing all datasets in that file.
         """
-        if file_path not in self.data_cache:
-            self.data_cache[file_path] = [data]
-        else:
-            self.data_cache[file_path].append(data)
-        return len(self.data_cache[file_path]) - 1
+        self.data_cache = data
+        return 0
 
     def get_data_infos(self):
         """Get data infos belonging to a certain type of data.
@@ -159,12 +158,12 @@ class HDF5Dataset(data.Dataset):
         fp = self.get_data_infos()[i]['file_path']
         idx = list(range(self.get_data_infos()[i]['length']))
         random.shuffle(idx)
+        self.iter_idx = iter(idx)
 
-        if fp not in self.data_cache:
-            self._load_data(fp)
+        self._load_data(fp)
         # get new cache_idx assigned by _load_data_info
         cache_idx = self.get_data_infos()[i]['cache_idx']
-        return self.data_cache[fp][cache_idx], iter(idx)
+        self.inputs = self.data_cache
 
     def get_total_samples(self):
         num_sample = []

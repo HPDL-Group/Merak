@@ -173,33 +173,15 @@ def preprocessing_datasets(datasets, tokenizer_func, model_name):
 
     return lm_datasets['train'], lm_datasets['validation']
 
-def _shift_right(input_ids):
-        decoder_start_token_id = 0
-        pad_token_id = 0
-        assert (
-            decoder_start_token_id is not None
-        ), "self.model.config.decoder_start_token_id has to be defined. In T5 it is usually set to the pad_token_id. See T5 docs for more information"
-
-        # shift inputs to the right
-        shifted_input_ids = input_ids.new_zeros(input_ids.shape)
-        shifted_input_ids[..., 1:] = input_ids[..., :-1].clone()
-        shifted_input_ids[..., 0] = decoder_start_token_id
-
-        assert pad_token_id is not None, "self.model.config.pad_token_id has to be defined."
-        # replace possible -100 values in labels by `pad_token_id`
-        shifted_input_ids.masked_fill_(shifted_input_ids == -100, pad_token_id)
-
-        assert torch.all(shifted_input_ids >= 0).item(), "Verify that `shifted_input_ids` has only positive values"
-
-        return shifted_input_ids
 
 class Prepare_data(Dataset):
-    def __init__(self, tokenizer, input_length, output_length, print_text=False):
+    def __init__(self, model, tokenizer, input_length, output_length, print_text=False):
       self.dataset = self.split_into_segment(pd.read_csv("./train_context.csv"),input_length)
       self.input_length = input_length
       self.tokenizer = tokenizer
       self.output_length = output_length
       self.print_text = print_text
+      self.model = model
 
     def split_into_segment(self, ds, input_length):
         new_rows = []
@@ -328,7 +310,7 @@ class Prepare_data(Dataset):
         source_ids = source["input_ids"].squeeze()
         target_ids = targets["input_ids"].squeeze()
 
-        decoder_ids = _shift_right(target_ids)
+        decoder_ids = self.model.prepare_decoder_input_ids_from_labels(target_ids)
 
         src_mask    = source["attention_mask"].squeeze()
         target_mask = targets["attention_mask"].squeeze()

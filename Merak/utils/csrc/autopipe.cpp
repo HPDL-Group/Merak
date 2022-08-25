@@ -11,12 +11,12 @@ using namespace std;
 
 // Constants.
 /***************************Begin******************************/
-// Communication overhead for a vector whose size is [b, s, h](us).
+// Communication overhead for a vector with size [b, s, h](us).
 const long long kCommunicationOverhead = 0;
 /*************************** End ******************************/
 
 // Return detail information about block partition for kNumPipelineStages.
-vector<vector<int>> BlockPartitionAlgorithm(vector<int>& model, int& num_pipeline_stages, vector<long long>& block_time_mapping);
+vector<vector<int>> BlockPartitionAlgorithm(vector<int>& model, int& num_pipeline_stages, vector<vector<long long>>& block_time_mapping);
 
 // Reconstruct the dynamic programming in a recursive way and put the result in block_partition variable.This process can be finish by the following two functions.The ReconstructBlockPartitionsFrontToBack function searches the result from front to back during reconstruct, which has a trend to put the stage of critical path later, while the ReconstructBlockPartitionsBackToFront function searches the result from back to front during reconstruct, which has a trend to put the stage of critical path earlier.
 void ReconstructBlockPartitionsFrontToBack(vector<int>& model, vector<long long>& prefix_sum, vector<vector<long long>>& dp, int remaining_model_blocks, int remaining_partitions, vector<vector<int>>& block_partition);
@@ -24,10 +24,10 @@ void ReconstructBlockPartitionsFrontToBack(vector<int>& model, vector<long long>
 void ReconstructBlockPartitionsBackToFront(vector<int>& model, vector<long long>& prefix_sum, vector<vector<long long>>& dp, int remaining_model_blocks, int remaining_partitions, vector<vector<int>>& block_partition);
 
 // Return time cost and corresponding stage of critical path when using the block partition during training.
-pair<long long, int> TrainingTimeCalculation(vector<vector<int>>& block_partition, vector<long long>& block_time_mapping);
+pair<long long, int> TrainingTimeCalculation(vector<vector<int>>& block_partition, vector<vector<long long>>& block_time_mapping);
 
 // Put the forward time, backward time and last microbatch index for each stage of current block partition into corresponding array.
-void CalculationForRelevantArray(vector<vector<int>>& block_partition, vector<long long>& block_time_mapping, vector<long long>& forward_time, vector<long long>& backward_time, vector<int>& last_microbatch);
+void CalculationForRelevantArray(vector<vector<int>>& block_partition, vector<vector<long long>>& block_time_mapping, vector<long long>& forward_time, vector<long long>& backward_time, vector<int>& last_microbatch);
 
 
 // Calculate the start time of every forward/backward in 1F1B steady phase.Return the start time of the last forward microbatch on the critical path's steady phase and the corresponding stage.
@@ -40,26 +40,27 @@ long long CalculationForCooldownPhase(int& num_pipeline_stages, int& stage_of_cr
 void OutputResult(vector<vector<int>>& block_partition, int& stage_of_critical_path, long long& block_partition_cost);
 
 // Find minimum time cost overall block partitions for kNumPipelineStages with heuristic algorithm.Return the optimal block partition and corresponding time costs.
-vector<vector<int>> FindBestBlockPartition(vector<long long>& block_time_mapping, int& num_pipeline_stages, vector<vector<int>>& initial_block_partition, int& stage_of_critical_path, long long& minimum_time_costs, vector<long long>& prefix_sum, vector<vector<long long>>& dynamic_programming_array);
+vector<vector<int>> FindBestBlockPartition(vector<vector<long long>>& block_time_mapping, int& num_pipeline_stages, vector<vector<int>>& initial_block_partition, int& stage_of_critical_path, long long& minimum_time_costs, vector<long long>& prefix_sum, vector<vector<long long>>& dynamic_programming_array);
 
 // Get the prefix sum array and corresponding dynamic programming array of the model.
-void GetPrefixSumArrayAndDpArray(vector<int>& model, int& num_pipeline_stages, vector<long long>& block_time_mapping, vector<long long>& prefix_sum, vector<vector<long long>>& dynamic_programming_array);
+void GetPrefixSumArrayAndDpArray(vector<int>& model, int& num_pipeline_stages, vector<vector<long long>>& block_time_mapping, vector<long long>& prefix_sum, vector<vector<long long>>& dynamic_programming_array);
 
 //The interface function, input the model's array of computation time or array of computation volumes, and the number of pipeline stages to be divided, the function returns the optimal pipeline partition.
-vector<int> MerakPipe(vector<long long> model_calculation, int num_pipeline_stages);
+vector<int> MerakPipe(vector<long long> model_calculation_forward, vector<long long> model_calculation_backward, int num_pipeline_stages);
 
 // int main(){
-//     vector<long long> model_cal = {1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,};
+//     vector<long long> model_cal_f = {1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,};
+//     vector<long long> model_cal_b = {1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,};
 //     int pp = 4;
-//     vector<vector<int>> result = MerakPipe(model_cal, pp);
+//     vector<int> result = MerakPipe(model_cal_f, model_cal_b, pp);
 //     return 0;
 // }
 
-vector<int> MerakPipe(vector<long long> model_calculation, int num_pipeline_stages){
+vector<int> MerakPipe(vector<long long> model_calculation_forward, vector<long long> model_calculation_backward, int num_pipeline_stages){
     // block computing time mapping for different layers.For the first axis,
-    vector<long long> block_time_mapping = model_calculation;
+    vector<vector<long long>> block_time_mapping = {model_calculation_forward, model_calculation_backward};
     // transformer model architecture array.
-    vector<int> model(model_calculation.size());
+    vector<int> model(model_calculation_forward.size());
     // initial the architecture array.
     for(int i = 0; i < model.size(); i++) {
         model[i] = i;
@@ -92,7 +93,7 @@ vector<int> MerakPipe(vector<long long> model_calculation, int num_pipeline_stag
     return ret;
 }
 
-vector<vector<int>> FindBestBlockPartition(vector<long long>& block_time_mapping, int& num_pipeline_stages, vector<vector<int>>& initial_block_partition, int& stage_of_critical_path, long long& minimum_time_costs, vector<long long>& prefix_sum, vector<vector<long long>>& dynamic_programming_array) {
+vector<vector<int>> FindBestBlockPartition(vector<vector<long long>>& block_time_mapping, int& num_pipeline_stages, vector<vector<int>>& initial_block_partition, int& stage_of_critical_path, long long& minimum_time_costs, vector<long long>& prefix_sum, vector<vector<long long>>& dynamic_programming_array) {
     // Initialize variables for algorithm.
     vector<int> last_microbatch(num_pipeline_stages, 0);
     vector<long long> forward_time(num_pipeline_stages + 2, 0), backward_time(num_pipeline_stages + 2, 0);
@@ -176,7 +177,7 @@ vector<vector<int>> FindBestBlockPartition(vector<long long>& block_time_mapping
                                 forward_backward_time_cost_for_stage_of_critical_path += kCommunicationOverhead;
                             }
                             // Judgement for block movement.
-                            if(forward_backward_time_cost_for_stage_of_critical_path > forward_backward_time_cost_for_backtracing_stage + block_time_mapping[adjust_block_partition[backtracking_stage + 1][0]] + block_time_mapping[adjust_block_partition[backtracking_stage + 1][0]]) {
+                            if(forward_backward_time_cost_for_stage_of_critical_path > forward_backward_time_cost_for_backtracing_stage + block_time_mapping[0][adjust_block_partition[backtracking_stage + 1][0]] + block_time_mapping[1][adjust_block_partition[backtracking_stage + 1][0]]) {
                                 // Make block movement.Also, remember to reset the adjust stage and increse the corresponding value to gap.
                                 adjust_block_partition[backtracking_stage].push_back(adjust_block_partition[backtracking_stage + 1][0]);
                                 adjust_block_partition[backtracking_stage + 1].erase(adjust_block_partition[backtracking_stage + 1].begin());
@@ -270,12 +271,12 @@ vector<vector<int>> FindBestBlockPartition(vector<long long>& block_time_mapping
 }
 
 
-void GetPrefixSumArrayAndDpArray(vector<int>& model, int& num_pipeline_stages, vector<long long>& block_time_mapping, vector<long long>& prefix_sum, vector<vector<long long>>& dynamic_programming_array) {
+void GetPrefixSumArrayAndDpArray(vector<int>& model, int& num_pipeline_stages, vector<vector<long long>>& block_time_mapping, vector<long long>& prefix_sum, vector<vector<long long>>& dynamic_programming_array) {
     int num_model_blocks = model.size();
     // Calculation for prefix sum array.
     prefix_sum.push_back(0);
     for(int& model_block: model) {
-        prefix_sum.push_back(prefix_sum.back() + block_time_mapping[model_block]);
+        prefix_sum.push_back(prefix_sum.back() + block_time_mapping[0][model_block] + block_time_mapping[1][model_block]);
     }
     // Vector for dynamic programming.
     vector<vector<long long>> dp(num_model_blocks + 1, vector<long long>(min(num_model_blocks, num_pipeline_stages) + 1, __LONG_LONG_MAX__));
@@ -294,14 +295,14 @@ void GetPrefixSumArrayAndDpArray(vector<int>& model, int& num_pipeline_stages, v
     return;
 }
 
-vector<vector<int>> BlockPartitionAlgorithm(vector<int>& model, int& num_pipeline_stages, vector<long long>& block_time_mapping) {
+vector<vector<int>> BlockPartitionAlgorithm(vector<int>& model, int& num_pipeline_stages, vector<vector<long long>>& block_time_mapping) {
     vector<vector<int>> block_partition;
     int num_model_blocks = model.size();
     // Calculate the prefix sum for model blocks.There has three ways for computing prefix sum,forward time, backward time and forward&backward time.We use forward&backward time default.Noting there does not include forward/backward startup overhead,only considering computing time costs.
     vector<long long> prefix_sum;
     prefix_sum.push_back(0);
     for(int& model_block: model) {
-        prefix_sum.push_back(prefix_sum.back() + block_time_mapping[model_block]);
+        prefix_sum.push_back(prefix_sum.back() + block_time_mapping[0][model_block] + block_time_mapping[1][model_block]);
     }
     // Vector for dynamic programming.
     vector<vector<long long>> dp(num_model_blocks + 1, vector<long long>(min(num_model_blocks, num_pipeline_stages) + 1, __LONG_LONG_MAX__));
@@ -372,7 +373,7 @@ void ReconstructBlockPartitionsFrontToBack(vector<int>& model, vector<long long>
 }
 
 
-pair<long long, int> TrainingTimeCalculation(vector<vector<int>>& block_partition, vector<long long>& block_time_mapping) {
+pair<long long, int> TrainingTimeCalculation(vector<vector<int>>& block_partition, vector<vector<long long>>& block_time_mapping) {
     int num_pipeline_stages = block_partition.size();
     int num_microbatches = num_pipeline_stages * 2;
     // Build last microbatch array for every pipeline stage.
@@ -385,8 +386,8 @@ pair<long long, int> TrainingTimeCalculation(vector<vector<int>>& block_partitio
     for(int i = 1; i <= num_pipeline_stages; i++) {
         long long forward_time_for_stage_i = 0, backward_time_for_stage_i = 0;
         for(int& block_type:block_partition[i - 1]) {
-            forward_time_for_stage_i += block_time_mapping[block_type];
-            backward_time_for_stage_i += block_time_mapping[block_type];
+            forward_time_for_stage_i += block_time_mapping[0][block_type];
+            backward_time_for_stage_i += block_time_mapping[1][block_type];
         }
         forward_time[i] = forward_time_for_stage_i;
         backward_time[i] = backward_time_for_stage_i;
@@ -414,7 +415,7 @@ pair<long long, int> TrainingTimeCalculation(vector<vector<int>>& block_partitio
     return make_pair(pipeline_flush_time, stage_of_critical_path);
 }
 
-void CalculationForRelevantArray(vector<vector<int>>& block_partition, vector<long long>& block_time_mapping, vector<long long>& forward_time, vector<long long>& backward_time, vector<int>& last_microbatch) {
+void CalculationForRelevantArray(vector<vector<int>>& block_partition, vector<vector<long long>>& block_time_mapping, vector<long long>& forward_time, vector<long long>& backward_time, vector<int>& last_microbatch) {
     int num_pipeline_stages = block_partition.size();
     int num_microbatches = num_pipeline_stages * 2;
     // Build last microbatch array for every pipeline stage.
@@ -425,8 +426,8 @@ void CalculationForRelevantArray(vector<vector<int>>& block_partition, vector<lo
     for(int i = 1; i <= num_pipeline_stages; i++) {
         long long forward_time_for_stage_i = 0, backward_time_for_stage_i = 0;
         for(int& block_type:block_partition[i - 1]) {
-            forward_time_for_stage_i += block_time_mapping[block_type];
-            backward_time_for_stage_i += block_time_mapping[block_type];
+            forward_time_for_stage_i += block_time_mapping[0][block_type];
+            backward_time_for_stage_i += block_time_mapping[1][block_type];
         }
         forward_time[i] = forward_time_for_stage_i;
         backward_time[i] = backward_time_for_stage_i;

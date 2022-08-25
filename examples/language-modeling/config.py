@@ -78,6 +78,7 @@ def load_config(model_name):
             'type_vocab_size': 2, 
             'use_cache': False, 
             'vocab_size': 30522,
+            'return_dict': False,
             } 
     else:
         raise ValueError(f"No {model_name} config")

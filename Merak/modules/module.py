@@ -399,6 +399,7 @@ class PipelineModule(nn.Module):
             self.parts = module_utils.partition_balanced(weights=param_counts,
                                                      num_parts=num_stages)
         elif method == 'autopipe':
+            # experimental partition method
             from ..utils.profiler import FlopsProfiler
             mflops_list = []
             input = self._layer_specs[0].dummy_inputs
@@ -425,7 +426,8 @@ class PipelineModule(nn.Module):
                 mflops_list.append(round(flops / 10.0**6))
                 prof.end_profile()
             from ..autopipe import pipeline
-            self.parts = pipeline(mflops_list, num_stages)
+            #  input is forward_time, backward_time, pipeline_stage
+            self.parts = pipeline(mflops_list, [i*3 for i in mflops_list], num_stages)
             self.parts.append(len(self._layer_specs))
         else:
             raise NotImplementedError(f'Partitioning method {method} not implemented.')
