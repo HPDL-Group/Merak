@@ -29,6 +29,8 @@ import inspect
 import random
 import os
 import transformers
+from packaging import version
+
 def money_pathch_is_torch_fx_available():
     return True
 transformers.file_utils.is_torch_fx_available = money_pathch_is_torch_fx_available
@@ -38,7 +40,9 @@ from transformers.utils.fx import (HFTracer,
                         transform_to_dynamic_input_, 
                         _generate_supported_model_classes,
                         _SUPPORTED_MODELS, 
-                        _SUPPORTED_MODELS_FOR_DYNAMIC_AXES)
+                        _SUPPORTED_MODELS_FOR_DYNAMIC_AXES,
+                        _wrap_method_for_model_tracing,
+                        _reset_tensor_methods)
 
 from .graph_shard import shard_model_transformers
 from ..modules.layer_proxy import LinearProxy, Conv1DProxy
@@ -81,9 +85,10 @@ def convert_to_sequential(model, args, extra_leaf_modules=(), trace_batch=None):
     added_model = tuple(_generate_supported_model_classes('vit'))
     transformers_fx_models = tuple(_SUPPORTED_MODELS+_SUPPORTED_MODELS_FOR_DYNAMIC_AXES+added_model)
     # print_rank_0(transformers_fx_models)
+    if not args.fp16:
+        model.cpu()
     if isinstance(model, transformers_fx_models):
-        if not args.fp16:
-            model.cpu()
+
 
         if args.cache_sharding:
             assert args.cache_name is not None
@@ -253,6 +258,37 @@ class MpTracer(HFTracer):
             shape += [model.config.hidden_size]
             inputs_dict[input_name] = torch.ones(shape, dtype=torch.float, device=device)
         return inputs_dict
+
+    def trace(self, root: PreTrainedModel, concrete_args = None, method_names=None):
+        if concrete_args is None:
+            concrete_args = {}
+
+        sig = inspect.signature(root.forward)
+        input_names = sig.parameters.keys() - concrete_args.keys()
+
+        self.record(root, input_names, method_names=method_names)
+
+        for method_name, cache_name in self.recorded_methods.items():
+            _wrap_method_for_model_tracing(root, method_name, cache_name)
+
+        graph = torch.fx.Tracer.trace(self, root, concrete_args=concrete_args)
+
+        _reset_tensor_methods(self.original_methods)
+
+        torch_version = version.parse(torch.__version__)
+        if torch_version.minor <= 11:
+            # torch version compatibility
+            # https://github.com/huggingface/transformers/pull/17129
+            # https://github.com/pytorch/pytorch/pull/59569
+            for node in graph.nodes:
+                if node.op == "placeholder":
+                    # Removing default values for inputs as the forward pass will fail with them.
+                    if node.target in input_names:
+                        node.args = ()
+                    # It is a concrete arg so it is not used and should be removed.
+                    else:
+                        graph.erase_node(node)
+        return graph
 
 
 def symbolic_trace(

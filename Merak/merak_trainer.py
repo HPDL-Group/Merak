@@ -83,6 +83,18 @@ class MerakTrainer(Trainer):
             print_rank_0(f"No `MerakArguments` passed, using `output_dir={output_dir}`.")
             kwargs['args'] = MerakArguments(output_dir=output_dir)
 
+        # simplely set num_layer with summation of length of Sequential class
+        if kwargs['args'].num_layers is None:
+            def recursive_find_sequantial(m, num_layer):
+                if hasattr(m, '_modules'):
+                    for k in getattr(m, '_modules'):
+                        if isinstance(getattr(m,k),torch.nn.Sequential):
+                            num_layer += len(getattr(m,k))
+                        elif isinstance(getattr(m,k),torch.nn.Module):
+                            num_layer = recursive_find_sequantial(getattr(m,k),num_layer)
+                return num_layer
+            n_layer = recursive_find_sequantial(kwargs['model'], 0)
+            kwargs['args'].num_layers = n_layer if n_layer > 0 else None
         super().__init__(**kwargs)
 
         self.args.torch_ddp = False
@@ -205,6 +217,13 @@ class MerakTrainer(Trainer):
         del model
         gc.collect()
         torch.cuda.empty_cache()
+
+        if model_layers[0].dummy_inputs is None:
+            self.iter_dataloader = iter(self.get_train_dataloader())
+            one_batch = next(self.iter_dataloader)
+            one_batch.pop(-1)
+            model_layers[0].dummy_inputs = one_batch
+            del self.iter_dataloader
 
         # see_memory_usage('**** \n memory consumption after layer shard', force=True)
 

@@ -150,8 +150,8 @@ def save_checkpoint(iteration, model, optimizer, lr_scheduler, args, **kwargs):
         state_dict['checkpoint_version'] = 3.0
         state_dict['iteration'] = iteration
         state_dict['model'] = model.state_dict()
-        if kwargs is not None and len(kwargs) != 0:
-            for k, v in kwargs:
+        if kwargs is not None:
+            for k, v in kwargs.items():
                 state_dict[k] = v
 
         # Optimizer stuff.

@@ -123,9 +123,9 @@ def set_tp_layer_lists(col_para_list=None, row_para_list=None, input_output_mapp
 
     -   col_para_list (List[str], defaults to None) -- Name list of linear layer for column parallel style.
     -   row_para_list (List[str], defaults to None) -- Name list of linear layer for row parallel style..
-    -   input_output_mapping (List[str], defaults to None) -- Ratio between input and output of linear layer to indicate the tp style, 
+    -   input_output_mapping (List[tuple(str)], defaults to None) -- Ratio between input and output of linear layer to indicate the tp style,
         list of (input, output, 'row' or 'col')
-    -   weight_change_list (List[str], defaults to None) -- List of (layer name, tp dimension), will divide the tp dimension of layer name or layer_name.weight by the tp degree.
+    -   weight_change_list (List[tuple(str)], defaults to None) -- List of (layer name, tp dimension), will divide the tp dimension of layer name or layer_name.weight by the tp degree.
     -   tp_attr_list (List[str], defaults to None) -- Manual tp attributes list for each layer, each attribute will be divided by tp degree.
     """
 

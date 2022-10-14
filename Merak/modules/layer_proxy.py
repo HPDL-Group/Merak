@@ -40,16 +40,22 @@ class NumelParameter(nn.Parameter):
 
 
 class LinearProxy(nn.Module):
-    def __init__(self, in_features, out_features, bias=True, device=None, dtype=None):
-        self.module_args = (in_features, out_features, bias, device, dtype)
+    def __init__(self, *module_args, **module_kwargs):
+        self.module_args = module_args
+        if len(module_kwargs) != 0:
+            for k in module_kwargs:
+                self.module_args += (module_kwargs[k],)
         super(LinearProxy, self).__init__()
         global SHOULD_PRINT_LINEAR
         if SHOULD_PRINT_LINEAR:
             print_rank_0('using linear proxy')
             SHOULD_PRINT_LINEAR = False
-        self.in_features = in_features
-        self.out_features = out_features
-        self._bias = bias
+        self.in_features = self.module_args[0]
+        self.out_features = self.module_args[1]
+        if len(self.module_args) >= 3:
+            self._bias = self.module_args[2]
+        else:
+            self._bias = False
 
         self.mp_attr = ' '
 
@@ -59,7 +65,7 @@ class LinearProxy(nn.Module):
         self.weight = NumelParameter(w)
         self.weight.num_element = lambda: self.out_features*self.in_features
 
-        if bias:
+        if self._bias:
             self.bias = NumelParameter(torch.zeros(1))
             self.bias.num_element = lambda: self.out_features
         else:

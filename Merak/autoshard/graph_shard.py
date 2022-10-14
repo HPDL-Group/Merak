@@ -151,6 +151,25 @@ def _split_nodes(traced_graph_module, shard_count, node_user_count=None) -> Dict
                 # 如果args有需记录user的node, 将user数减一
                 if arg.name in node_user_count:
                     node_user_count[arg.name] -= 1
+
+                # if a node is inplace OP, it should stay with its input
+                if node.op is 'call_module':
+                    try:
+                        if hasattr(traced_graph_module, node.target):
+                            mod = getattr(traced_graph_module, node.target)
+                        else:
+                            submod = traced_graph_module
+                            prefix = node.target.split('.')
+                            for item in prefix:
+                                mod = getattr(submod, item, None)
+                                submod = mod
+                        if hasattr(mod, 'inplace'):
+                            min_node_name = arg.name
+                            min_shard_id = node_name_to_shard_id[min_node_name]
+                            continue
+                    except:
+                        pass
+
                 
                 # 如果args里面有某一个shrad的输出
                 if arg.name in shard_output.values():

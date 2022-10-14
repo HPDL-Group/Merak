@@ -47,7 +47,7 @@ def get_patched_func():
 topo = None
 communication_grid = None
 
-def init(pp, tp, dp):
+def init(pp, tp, dp, backend='nccl'):
     """
     Initialized the distributed communication groups, include data parallel, 
     tensor model parallel and pipeline model parallel. Each parallel degree 
@@ -59,7 +59,7 @@ def init(pp, tp, dp):
     -   pp (int) -- Parallel degree of pipeline model parallelism.
     """
     if not dist.is_initialized():
-        dist.init_process_group('nccl')
+        dist.init_process_group(backend)
     # we init topology and communication grid here
     from .mpu.topology import PipeModelDataParallelTopology, PipelineParallelGrid
     global topo

@@ -399,10 +399,13 @@ class PipelineModule(nn.Module):
             self.parts = module_utils.partition_balanced(weights=param_counts,
                                                      num_parts=num_stages)
         elif method == 'autopipe':
+
             # experimental partition method
             from ..utils.profiler import FlopsProfiler
             mflops_list = []
             input = self._layer_specs[0].dummy_inputs
+            if not isinstance(input, dict):
+                input = [i.cpu() for i in input]
             self.dummy_input = input 
             extra_inputs = {}
             for k, v in input_to_shard_dic.items():
@@ -413,7 +416,7 @@ class PipelineModule(nn.Module):
             for idx, layer in enumerate(self._layer_specs):
                 prof = FlopsProfiler(layer)
                 prof.start_profile()
-                if idx == 0:
+                if idx == 0 and isinstance(input, dict):
                     input = layer(**input)
                 else:
                     if idx in extra_inputs:
@@ -425,6 +428,8 @@ class PipelineModule(nn.Module):
                 # print_rank_0(flops)
                 mflops_list.append(round(flops / 10.0**6))
                 prof.end_profile()
+            if self.global_rank == 0:
+                logger.info(f'Using experimental autopipe partition, mflops list: {mflops_list}')
             from ..autopipe import pipeline
             #  input is forward_time, backward_time, pipeline_stage
             self.parts = pipeline(mflops_list, [i*3 for i in mflops_list], num_stages)

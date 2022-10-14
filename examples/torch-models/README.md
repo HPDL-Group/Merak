@@ -16,9 +16,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# Running with Swin model
+# Running with Swin-transformer and torchvision models
 
-This script shows that the Swin-transformer model, which is not from `transformers`, but can be traced by `torch.fx`, how to run with 3D parallelism in Merak.
+This script shows that the torch model, which is not from `transformers` library, but can be traced by `torch.fx`, how to run with 3D parallelism in Merak.
 
 Running with following bash:
 

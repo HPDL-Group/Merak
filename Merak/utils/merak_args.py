@@ -33,7 +33,7 @@ _GLOBAL_ARGS = None
 def manual_set_args(args):
     global _GLOBAL_ARGS
     # some args for megatron
-    if args.fp16:
+    if hasattr(args,'fp16') and args.fp16:
         args.params_dtype = torch.half
     else:
         args.params_dtype = torch.float32
@@ -173,7 +173,7 @@ class MerakArguments(TrainingArguments):
     )
     num_layers: Optional[int] = field(
         default=None, 
-        metadata={"help": "Number of hidden layers in the Transformer, will try to get this in model config. Defaults to None."}
+        metadata={"help": "Number of hidden layers in the Transformer, will try to get or eval this in model config. Defaults to None."}
     )
     seq_length: Optional[int] = field(
         default=None, 
@@ -216,8 +216,7 @@ class MerakArguments(TrainingArguments):
     finetune: bool = field(
         default=False,
         metadata={"help": "Load model for finetuning. Do not load optimizer "
-                          "or rng state from checkpoint and set iteration to 0."
-                          "Assumed when loading a release checkpoint."}
+                          "or rng state from checkpoint and set iteration to 0."}
     )
     no_save_rng: bool = field(
         default=False,

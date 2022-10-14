@@ -66,7 +66,7 @@ Merak.init(dp, tp, pp)
 
 # Set training args MerakArgument.
 training_args = MerakArguments(
-	activation_checkpointing=True
+	output_dir='./path/to/save'
 )
 
 # Set our Trainer
