@@ -134,9 +134,13 @@ The Merak source code was based off the  [transformers trainer](https://huggingf
 ## Cite Us
 ```
 @article{lai2022merak,
-  title={Merak: An Efficient Distributed DNN Training Framework with Automated 3D Parallelism for Giant Foundation Models},
-  author = {Lai, Zhiquan and Li, Shengwei and Tang, Xudong and Ge, Keshi and Liu, Weijie and Duan, Yabo and Qiao, Linbo and Li, Dongsheng},
-  journal={arXiv preprint arxiv:2206.04959},
-  year={2022}
-}
+  author={Lai, Zhiquan and Li, Shengwei and Tang, Xudong and Ge, Keshi and Liu, Weijie and Duan, Yabo and Qiao, Linbo and Li, Dongsheng},
+  journal={IEEE Transactions on Parallel and Distributed Systems}, 
+  title={Merak: An Efficient Distributed DNN Training Framework With Automated 3D Parallelism for Giant Foundation Models}, 
+  year={2023},
+  volume={34},
+  number={5},
+  pages={1466-1478},
+  doi={10.1109/TPDS.2023.3247001}
+  }
 ```
