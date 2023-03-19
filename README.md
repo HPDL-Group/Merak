@@ -18,7 +18,7 @@ limitations under the License.
 
 # Merak: fast and easy to use 3D parallelism DNN training framework
 
-[Merak](https://arxiv.org/abs/2206.04959) is a distributed deep learning training framework with automated 3D parallelism. It can automatically slice, allocate and train a DNN model, making the development of giant model fast and easy. The current version of Merak is adapted to PyTorch.
+[Merak](https://ieeexplore.ieee.org/document/10049507) is a distributed deep learning training framework with automated 3D parallelism. It can automatically slice, allocate and train a DNN model, making the development of giant model fast and easy. The current version of Merak is adapted to PyTorch.
 
 ## Motivation of Merak
 
@@ -123,7 +123,7 @@ In addition, we observe that a more efficient memory utilization can be obtained
 
 Furthermore, we improve the concurrency of the communication and computation in TMP with our sub-pipelined TMP approach, which applies microbatch splitting for individual sub-microbatches, and thereby pipelines sub-microbatches to overlap the communication and computation in TMP.
 
-Please refer to our [paper](https://arxiv.org/abs/2206.04959) for more technical details and experiment results.
+Please refer to our [paper](https://ieeexplore.ieee.org/document/10049507) for more technical details and experiment results.
 
 
 
