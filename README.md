@@ -144,3 +144,17 @@ The Merak source code was based off the  [transformers trainer](https://huggingf
   doi={10.1109/TPDS.2023.3247001}
   }
 ```
+
+[Pipeline partition algorithm](https://github.com/HPDL-Group/Merak/blob/main/Merak/utils/csrc/autopipe.cpp) [AutoPipe](https://ieeexplore.ieee.org/abstract/document/9912711)
+```
+@INPROCEEDINGS{liu2022autopipe,
+  author={Liu, Weijie and Lai, Zhiquan and Li, Shengwei and Duan, Yabo and Ge, Keshi and Li, Dongsheng},
+  booktitle={2022 IEEE International Conference on Cluster Computing (CLUSTER)}, 
+  title={AutoPipe: A Fast Pipeline Parallelism Approach with Balanced Partitioning and Micro-batch Slicing}, 
+  year={2022},
+  volume={},
+  number={},
+  pages={301-312},
+  doi={10.1109/CLUSTER51413.2022.00042}
+  }
+```
