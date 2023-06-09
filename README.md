@@ -110,7 +110,7 @@ When we train a model with pipeline parallelism, different stages require differ
 
 ###   High-performance training
 
-To further boost the training performance, our efficient3D parallel runtime engine proposes some novel technologies to achieve better integration of training resources.
+To further boost the training performance, our efficient 3D parallel runtime engine proposes some novel technologies to achieve better integration of training resources.
 - Shifted critical path schedule.
 
 We introduce a shifted critical path pipeline schedule for reducing pipeline bubbles. Critical path is an operation sequence that determines the pipeline latency. Our schedule shortens the critical path by dropping redundant recomputation and adjusting orders and start time of operations.

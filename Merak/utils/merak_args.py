@@ -97,7 +97,7 @@ def mergeargs(training_args, model_config):
 @dataclass
 class MerakArguments(TrainingArguments):
     """
-    MerakArguments inherits from transformers.TrainingArguments (https://huggingface.co/docs/transformers/master/en/main_classes/trainer#transformers.TrainingArguments) 
+    MerakArguments inherits from transformers.TrainingArguments (https://huggingface.co/docs/transformers/v4.15.0/en/main_classes/trainer) 
     extending the arguments we need in 3D parallelism.
     Using [`HfArgumentParser`] we can turn this class into [argparse](https://docs.python.org/3/library/argparse#module-argparse) 
     arguments that can be specified on the command line.
@@ -123,6 +123,10 @@ class MerakArguments(TrainingArguments):
     -   no_load_rng (bool, defaults to False) -- Do not load current optimizer.
     -   no_load_optim (bool, defaults to False) -- Do not load current optimizer.
     -   split_inputs (bool, defaults to False) -- Whether to split input data.
+    -   parallel_vocab (bool, defaults to False) -- Whether to parallel vocabulary when TMP > 1.
+    -   sequence_parallel (bool, defaults to False) -- Whether to use sequence parallel when TMP > 1.
+    -   sequence_dim (int, defaults to 1) -- Sequence length dimension in hidden states.
+    -   dealloc_pipeoutput (bool, defaults to False) -- Whether to dealloc pipeline sended activation output.
     -   activation_checkpoint_ratio (float, Optional, defaults to None) -- activation checkpoint ratio of first stage, in range(0,1). Default to None.
     -   tp_overlapping_level (float, Optional, defaults to 0) -- "Possible tensor parallelism communication overlapping level from 0 to 3."
                                                                  "0 refers to no overlapping; 1 refers to only overlap within linear function;"
@@ -137,6 +141,11 @@ class MerakArguments(TrainingArguments):
     -   loss_scale_window (int, defaults to 1000) -- 'loss_scale_window is a fp16 parameter representing the window over which to raise/lower the dynamic loss scale value.'
     -   hysteresis (int, defaults to 2) -- 'hysteresis is a fp16 parameter representing the delay shift in dynamic loss scaling.'
     -   min_loss_scale (int, defaults to 1) -- 'min_loss_scale is a fp16 parameter representing the minimum dynamic loss scale value.'
+    -   custom_partition (float, str, defaults to None) -- 'Customize the partition size of the model. Length of list is pipeline_world_size + 1.
+                                                           'Example: [0, 6, 12, 18, 26, ..., last_layer_idx]', Default to None.
+    -   no_tie_modules (bool, defaults to False) -- Whether to set tie modules.
+    -   save_total_limit (int, defaults to -1) -- Limit the max numbers of checkpoints.
+    -   eval_iters (int, defaults to None) -- Number of iterations to run for evaluationvalidation/test for.
     """
 
     train_schedule: str = field(
@@ -244,7 +253,18 @@ class MerakArguments(TrainingArguments):
         default=True,
         metadata={"help": "Whether to parallel vocabulary when TMP > 1"}
     )
-
+    sequence_parallel: bool = field(
+        default=False,
+        metadata={"help": "Whether to use sequence parallel when TMP > 1"}
+    )
+    sequence_dim: int = field(
+        default=1,
+        metadata={"help": "Sequence length dimension in hidden states"}
+    )
+    dealloc_pipeoutput: bool = field(
+        default=False,
+        metadata={"help": "Whether to dealloc pipeline sended activation output"}
+    )
     activation_checkpoint_ratio: Optional[List[str]] = field(
         default=None, 
         metadata={"help": 'activation checkpoint ratio of first stage, in range(0,1) for each pipeline stage. Default to None'}
@@ -283,6 +303,24 @@ class MerakArguments(TrainingArguments):
     min_loss_scale: int = field(
         default=1,
         metadata={"help": 'min_loss_scale is a fp16 parameter representing the minimum dynamic loss scale value.'}
+    )
+
+    custom_partition: Optional[List[str]] = field(
+        default=None,
+        metadata={"help": "Customize the partition size of the model. Length of list is pipeline_world_size + 1."
+                        "Example: [0, 6, 12, 18, 26, ..., last_layer_idx]"}
+    )
+    no_tie_modules: bool = field(
+        default=False,
+        metadata={"help": "Whether to set tie modules"}
+    )
+    save_total_limit: int = field(
+        default=-1,
+        metadata={"help": 'Limit the max numbers of checkpoints.'}
+    )
+    eval_iters: Optional[int] = field(
+        default=None,
+        metadata={"help": 'Number of iterations to run for evaluationvalidation/test for.'}
     )
 
 

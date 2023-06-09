@@ -43,10 +43,12 @@ def get_checkpoint_version():
     return _CHECKPOINT_VERSION
 
 def get_checkpoint_name(checkpoints_path, iteration,
-                        release=False, complete=False):
+                        release=False, complete=False, best=None):
     """A unified checkpoint name."""
     if release:
         directory = 'release'
+    elif best is not None:
+        directory = 'best_model'
     else:
         directory = 'iter_{:07d}'.format(iteration)
     # Use both the tensor and pipeline MP rank.
@@ -96,6 +98,11 @@ def get_checkpoint_tracker_filename(checkpoints_path):
     training to restart from."""
     return os.path.join(checkpoints_path, 'latest_checkpointed_iteration.txt')
 
+def get_best_checkpoint_filename(checkpoints_path):
+    """Tracker file rescords the latest chckpoint during
+    training to restart from."""
+    return os.path.join(checkpoints_path, 'best_model_loss.txt')
+
 
 def read_metadata(tracker_filename):
     # Read the tracker file and either set the iteration or
@@ -130,17 +137,47 @@ def read_metadata(tracker_filename):
                   mpu.get_pipe_parallel_rank(), iteration, max_iter), flush=True)
     return max_iter, release
 
-def save_checkpoint(iteration, model, optimizer, lr_scheduler, args, **kwargs):
+def save_checkpoint(iteration, model, optimizer, lr_scheduler, best_model, args, **kwargs):
     """Save a model checkpoint."""
+    dtime = datetime.datetime.now().strftime('%Y-%m-%d')
+    if best_model is not None:
+        save_path = args.output_dir+'/best_ckpt'
+        tracker_filename = get_best_checkpoint_filename(save_path)
+
+        if not torch.distributed.is_initialized() or torch.distributed.get_rank()==0:
+            if os.path.isfile(tracker_filename):
+                with open(tracker_filename, 'r') as f:
+                    metastring = f.read().strip()
+                    saved_best = eval(metastring)
+                if best_model > saved_best:
+                    sig = torch.tensor(0)
+                    torch.distributed.broadcast(sig, src=0)
+                    return
+
+            if not os.path.exists(save_path):
+                os.makedirs(save_path)
+
+            with open(tracker_filename, 'w') as f:
+                f.write(str(best_model))
+
+            sig = torch.tensor(1)
+            torch.distributed.broadcast(sig, src=0)
+        else:
+            sig = torch.tensor(0)
+            torch.distributed.broadcast(sig, src=0)
+            if sig == 0:
+                return
+
+        print_rank_0('saving best model with loss {} checkpoint at iteration {:7d} to {}'.format(
+            best_model, iteration, save_path))
+    else:
+        save_path = args.output_dir+'/{time}_ckpt'.format(time=dtime)
+
+        print_rank_0('saving checkpoint at iteration {:7d} to {}'.format(
+            iteration, save_path))
 
     # Only rank zero of the data parallel writes to the disk.
     model = unwrap_model(model)
-
-    dtime = datetime.datetime.now().strftime('%Y-%m-%d')
-    save_path = args.output_dir+'/{time}_ckpt'.format(time=dtime)
-
-    print_rank_0('saving checkpoint at iteration {:7d} to {}'.format(
-        iteration, save_path))
 
     if not torch.distributed.is_initialized() or mpu.get_data_parallel_rank() == 0:
 
@@ -179,7 +216,7 @@ def save_checkpoint(iteration, model, optimizer, lr_scheduler, args, **kwargs):
         # torch.save(comp_model, check_name, _use_new_zipfile_serialization=False)
 
         # Save.
-        checkpoint_name = get_checkpoint_name(save_path, iteration)
+        checkpoint_name = get_checkpoint_name(save_path, iteration, best=best_model)
         ensure_directory_exists(checkpoint_name)
         torch.save(state_dict, checkpoint_name, _use_new_zipfile_serialization=False)
 
@@ -273,7 +310,11 @@ def load_checkpoint(model, optimizer, lr_scheduler, args, load_arg='load', stric
         print_rank_0('could not find arguments in the checkpoint ...')
 
     # Model.
-    model.load_state_dict(state_dict['model'], strict=strict)
+    if 'model' in state_dict.keys():
+        model.load_state_dict(state_dict['model'], strict=strict)
+    else:
+        model.load_state_dict(state_dict, strict=strict)
+
 
     # Fix up query/key/value matrix ordering if needed
     checkpoint_version = get_checkpoint_version()

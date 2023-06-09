@@ -19,7 +19,6 @@
 
 import collections
 import os
-
 import re as regex
 
 from functools import partial
@@ -28,11 +27,22 @@ import torch.nn as nn
 import torch.distributed as dist
 
 from .. import print_rank_0
-from ..utils import logger
+from ..utils import logger, get_args
 from . import utils as module_utils
 from ..runtime.checkpointing import checkpoint as checkpoint_func
+from ..runtime.checkpointing import get_cuda_rng_tracker
 from ..autoshard.convert import add_inputs_to_shards
 from ..mpu.layers import VocabParallelEmbedding
+from .layer_proxy import EmbeddingProxy, LinearProxy
+
+
+try:
+    from contextlib import nullcontext
+except ImportError:
+    from contextlib import contextmanager
+    @contextmanager
+    def nullcontext(enter_result=None):
+        yield enter_result
 
 class PipelineError(Exception):
     """Errors related to the use of deepspeed.PipelineModule """
@@ -53,7 +63,8 @@ class PipelineModule(nn.Module):
                  activation_checkpoint_func=checkpoint_func,
                  activation_checkpoint_ratio=None,
                  tie_dims=set(),
-                 input_to_shard_dic=None):
+                 input_to_shard_dic=None, 
+                 sequence_parallel=False):
         """Modules to be parallelized with pipeline parallelism.
 
         The key constraint that enables pipeline parallelism is the
@@ -91,6 +102,8 @@ class PipelineModule(nn.Module):
         if num_stages is None and topology is None:
             raise RuntimeError('must provide num_stages or topology')
 
+        self.args = get_args()
+
         self.micro_offset = 0
 
         self.loss_fn = loss_fn
@@ -115,6 +128,7 @@ class PipelineModule(nn.Module):
         assert self.local_rank != None
         self._topo = topology
         self._grid = communicaiton_grid
+        self.sequence_parallel = sequence_parallel
 
         self.stage_id = self._topo.get_coord(self.global_rank).pipe
         self.num_stages = self._topo.get_dim('pipe')
@@ -170,8 +184,12 @@ class PipelineModule(nn.Module):
         for layer_idx, layer in enumerate(specs):
             for m in layer.modules():
                 if hasattr(m, 'weight'):
-                    if m.weight.shape in tie_dims:
-                        self.tied_stage[str(m.weight.shape).replace(".", "_")].add(self.stage_owner(layer_idx))
+                    if isinstance(m, (EmbeddingProxy, LinearProxy)):
+                        weight_shape = m.weight_shape
+                    else:
+                        weight_shape = m.weight.shape
+                    if weight_shape in tie_dims:
+                        self.tied_stage[str(weight_shape).replace(".", "_")].add(self.stage_owner(layer_idx))
 
 
         for local_idx, layer in enumerate(specs[self._local_start:self._local_stop]):
@@ -301,76 +319,80 @@ class PipelineModule(nn.Module):
                 return inputs
 
             return exec_func
-
-
-        if self.activation_checkpoint_interval == 0:
-            func = exec_range_func(0, len(self.forward_funcs))
-            x = func(forward_input)
-        elif self.activation_checkpoint_ratio is not None and float(self.activation_checkpoint_ratio[self.stage_id]) != 1.0:
-            # if self.stage_id == 0:
-            #     self.activation_checkpoint_ratio = 0.6
-            ac_num_layers = int(len(self.forward_funcs) * float(self.activation_checkpoint_ratio[self.stage_id]))
-            
-            ### a naive implement
-            # non_ac_layers = len(self.forward_funcs) - ac_num_layers
-            # x = forward_input
-            # if not isinstance(x, tuple):
-            #     x = (x, )
-            # x = exec_range_func(0, non_ac_layers)(*x)
-            # if not isinstance(x, tuple):
-            #     x = (x, )
-            # x = self.activation_checkpoint_func(
-            #         exec_range_func(non_ac_layers, len(self.forward_funcs)),
-            #         *x)
-
-            next_checkpointable = self.frist_checkpointable
-            x = forward_input
-            for start_idx, end_idx in self.checkpointable_idx:
-                if next_checkpointable:
-                    if not isinstance(x, tuple):
-                        x = (x, )
-                    if ac_num_layers <= 0:
-                        x = exec_range_func(start_idx, end_idx)(*x)
-                    else:
-                        layer_num = end_idx - start_idx
-                        if ac_num_layers >= layer_num:
-                            x = self.activation_checkpoint_func(
-                                        exec_range_func(start_idx, end_idx),
-                                        *x)
-                        else:
-                            x = self.activation_checkpoint_func(
-                                        exec_range_func(start_idx, start_idx+ac_num_layers),
-                                        *x)
-                            if not isinstance(x, tuple):
-                                x = (x, )
-                            x = exec_range_func(start_idx+ac_num_layers, end_idx)(*x)
-                        ac_num_layers -=layer_num
-                else:
-                    if not isinstance(x, tuple):
-                        x = (x, )
-                    x = exec_range_func(start_idx, end_idx)(*x)
-                next_checkpointable = not next_checkpointable
+        if self.sequence_parallel:
+            rng_context = get_cuda_rng_tracker().fork()
         else:
-            num_layers = len(self.forward_funcs)
-            x = forward_input
-            for start_idx in range(0, num_layers, self.activation_checkpoint_interval):
-                end_idx = min(start_idx + self.activation_checkpoint_interval,
-                              num_layers)
+            rng_context = nullcontext()
+            
+        with rng_context:
+            if self.activation_checkpoint_interval == 0:
+                func = exec_range_func(0, len(self.forward_funcs))
+                x = func(forward_input)
+            elif self.activation_checkpoint_ratio is not None and float(self.activation_checkpoint_ratio[self.stage_id]) != 1.0:
+                # if self.stage_id == 0:
+                #     self.activation_checkpoint_ratio = 0.6
+                ac_num_layers = int(len(self.forward_funcs) * float(self.activation_checkpoint_ratio[self.stage_id]))
+                
+                ### a naive implement
+                # non_ac_layers = len(self.forward_funcs) - ac_num_layers
+                # x = forward_input
+                # if not isinstance(x, tuple):
+                #     x = (x, )
+                # x = exec_range_func(0, non_ac_layers)(*x)
+                # if not isinstance(x, tuple):
+                #     x = (x, )
+                # x = self.activation_checkpoint_func(
+                #         exec_range_func(non_ac_layers, len(self.forward_funcs)),
+                #         *x)
 
-                funcs = self.forward_funcs[start_idx:end_idx]
-                # Since we either pass tensors or tuples of tensors without unpacking, we
-                # need to be careful not to double-wrap tensors with tuple.
-                if not isinstance(x, tuple):
-                    x = (x, )
-                if self._is_checkpointable(funcs) and (self.stage_id < self.num_stages-1 or end_idx !=num_layers):
-                    # print('checkpoint', self.stage_id,self.forward_funcs[start_idx:end_idx])
-                    x = self.activation_checkpoint_func(
-                        exec_range_func(start_idx,
-                                        end_idx),
-                        *x)
-                else:
-                    # print('no checkpoint',self.stage_id,self.forward_funcs[start_idx:end_idx])
-                    x = exec_range_func(start_idx, end_idx)(*x)
+                next_checkpointable = self.frist_checkpointable
+                x = forward_input
+                for start_idx, end_idx in self.checkpointable_idx:
+                    if next_checkpointable:
+                        if not isinstance(x, tuple):
+                            x = (x, )
+                        if ac_num_layers <= 0:
+                            x = exec_range_func(start_idx, end_idx)(*x)
+                        else:
+                            layer_num = end_idx - start_idx
+                            if ac_num_layers >= layer_num:
+                                x = self.activation_checkpoint_func(
+                                            exec_range_func(start_idx, end_idx),
+                                            *x)
+                            else:
+                                x = self.activation_checkpoint_func(
+                                            exec_range_func(start_idx, start_idx+ac_num_layers),
+                                            *x)
+                                if not isinstance(x, tuple):
+                                    x = (x, )
+                                x = exec_range_func(start_idx+ac_num_layers, end_idx)(*x)
+                            ac_num_layers -=layer_num
+                    else:
+                        if not isinstance(x, tuple):
+                            x = (x, )
+                        x = exec_range_func(start_idx, end_idx)(*x)
+                    next_checkpointable = not next_checkpointable
+            else:
+                num_layers = len(self.forward_funcs)
+                x = forward_input
+                for start_idx in range(0, num_layers, self.activation_checkpoint_interval):
+                    end_idx = min(start_idx + self.activation_checkpoint_interval,
+                                num_layers)
+
+                    funcs = self.forward_funcs[start_idx:end_idx]
+                    # Since we either pass tensors or tuples of tensors without unpacking, we
+                    # need to be careful not to double-wrap tensors with tuple.
+                    if not isinstance(x, tuple):
+                        x = (x, )
+                    if self._is_checkpointable(funcs) and (self.stage_id < self.num_stages-1 or end_idx !=num_layers):
+                        # print('checkpoint', self.stage_id,self.forward_funcs[start_idx:end_idx])
+                        x = self.activation_checkpoint_func(
+                            exec_range_func(start_idx,
+                                            end_idx),
+                            *x)
+                    else:
+                        # print('no checkpoint',self.stage_id,self.forward_funcs[start_idx:end_idx])
+                        x = exec_range_func(start_idx, end_idx)(*x)
         return x
 
     def _partition_layers(self, method='uniform', input_to_shard_dic=None):
@@ -398,8 +420,10 @@ class PipelineModule(nn.Module):
             # print(param_counts)
             self.parts = module_utils.partition_balanced(weights=param_counts,
                                                      num_parts=num_stages)
+        elif method == 'custom':
+            self.parts = [int(i) for i in self.args.custom_partition[0].split(",")]
         elif method == 'autopipe':
-
+            
             # experimental partition method
             from ..utils.profiler import FlopsProfiler
             mflops_list = []

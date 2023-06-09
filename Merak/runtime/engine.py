@@ -34,8 +34,8 @@ try:
 except ImportError:
     # will using torch.cuda.amp
     APEX_INSTALLED = False
-# from torch.cuda.amp import autocast
-# from torch.cuda.amp.grad_scaler import GradScaler
+from torch.cuda.amp import autocast
+from torch.cuda.amp.grad_scaler import GradScaler
 
 version = "0.0.0"
 
@@ -151,9 +151,9 @@ class DeepSpeedEngine(Module):
 
         # Configure optimizer and scheduler
         if self.amp_enabled() or self.fp16_enabled():
-            # if self.args.half_precision_backend == "amp":
-            #     assert mpu.get_pipe_parallel_world_size() <= 1 and self.mp_world_size <= 1, "Currently not support model parallelism with native amp"
-            #     self.scaler = GradScaler()
+            if self.args.half_precision_backend == "amp":
+                # assert mpu.get_pipe_parallel_world_size() <= 1 and self.mp_world_size <= 1, "Currently not support model parallelism with native amp"
+                self.scaler = GradScaler()
             self._configure_optimizer(optimizer, model_parameters)
             self.lr_scheduler = lr_scheduler
         else:
@@ -346,6 +346,8 @@ class DeepSpeedEngine(Module):
         # elif self.bfloat16_enabled():
         #     self.module.bfloat16()
         else:
+            if self.args.half_precision_backend == "apex":
+                self.module.float()
             if not all(
                 [param.dtype == torch.float for param in self.module.parameters()]):
                 names = [
@@ -414,7 +416,7 @@ class DeepSpeedEngine(Module):
             self._broadcast_model()
             # TODO: maybe need to broadcast experts differently?
         elif self.fp16_enabled():
-            self.optimizer = self._configure_fp16_optimizer(basic_optimizer)
+            self.optimizer = self._configure_fp16_optimizer(basic_optimizer) 
         else:
             self.optimizer = basic_optimizer
             log_dist("Final Optimizer = {}".format(self.client_optimizer.__class__.__name__),
@@ -510,6 +512,12 @@ class DeepSpeedEngine(Module):
             **kwargs: variable length keyword arguments
         """
 
+        if (not self.fp16_enabled()
+                and not self.amp_enabled()):
+            self.zero_grad()
+        else:
+            self.optimizer.zero_grad()
+
         if self.wall_clock_breakdown():
             self.timers('forward_microstep').start()
             self.timers('forward').start()
@@ -528,11 +536,11 @@ class DeepSpeedEngine(Module):
         # torch.distributed.barrier()
         # os._exit(0)
 
-        # if self.amp_enabled() and self.args.half_precision_backend == "amp":
-        #     with autocast(dtype=torch.float16):
-        #         loss = self.module(*inputs, **kwargs)
-        # else:
-        loss = self.module(*inputs, **kwargs)
+        if self.amp_enabled() and self.args.half_precision_backend == "amp":
+            with autocast(dtype=torch.float16):
+                loss = self.module(*inputs, **kwargs)
+        else:
+            loss = self.module(*inputs, **kwargs)
 
 
         if self.wall_clock_breakdown():
@@ -590,14 +598,14 @@ class DeepSpeedEngine(Module):
         if self.amp_enabled() and self.args.half_precision_backend == "apex":
             # AMP requires delaying unscale when inside gradient accumulation boundaries
             # https://nvidia.github.io/apex/advanced.html#gradient-accumulation-across-iterations
-            delay_unscale = not self.is_gradient_accumulation_boundary()
+            delay_unscale = not self._is_gradient_accumulation_boundary()
             with amp.scale_loss(loss,
                                 self.optimizer,
                                 delay_unscale=delay_unscale) as scaled_loss:
                 scaled_loss.backward()
-        # elif self.amp_enabled() and self.args.half_precision_backend == "amp":
-        #     if not self.is_gradient_accumulation_boundary():
-        #         self.scaler.scale(loss).backward()
+        elif self.amp_enabled() and self.args.half_precision_backend == "amp":
+            if self._is_gradient_accumulation_boundary:
+                self.scaler.scale(loss).backward()
         elif self.fp16_enabled():
             self.optimizer.backward(loss)
         else:
@@ -621,10 +629,10 @@ class DeepSpeedEngine(Module):
         if release_loss:
             # loss.data = None
             pass
-
+        self.micro_steps += 1
         return loss
 
-    def is_gradient_accumulation_boundary(self):
+    def _is_gradient_accumulation_boundary(self):
         """Query whether the current micro-batch is at the boundary of
         gradient accumulation, and thus will trigger gradient reductions and
         an optimizer step.
@@ -634,6 +642,16 @@ class DeepSpeedEngine(Module):
         """
         return (self.micro_steps + 1) % \
             self.gradient_accumulation_steps() == 0
+
+    def is_gradient_accumulation_boundary(self):
+        """Query whether the current micro-batch is at the boundary of
+        gradient accumulation, and thus will trigger gradient reductions and
+        an optimizer step.
+
+        Returns:
+            bool: if the current step is a gradient accumulation boundary.
+        """
+        pass
 
     def zero_grad(self):
         """
@@ -657,22 +675,24 @@ class DeepSpeedEngine(Module):
                 clip_grad_norm_(parameters=master_params,
                                 max_norm=self.gradient_clipping(),
                                 mpu=self.mpu)
-            # elif self.amp_enabled() and self.args.half_precision_backend == "amp":
-            #     if hasattr(self.scaler, "_scale") and self.scaler._scale is not None:
-            #         self.scaler.unscale_(self.optimizer)
-            #         torch.nn.utils.clip_grad_norm_(parameters=self.module.parameters(),
-            #                                 max_norm=self.args.max_grad_norm)
-            #         self.scaler.step(self.optimizer)
-            #         self.scaler.update()
-            #         self.lr_scheduler.step(**(lr_kwargs or {}))
-        self.optimizer.step()
+            elif self.amp_enabled() and self.args.half_precision_backend == "amp":
+                if self.scaler._scale is None:
+                    self.scaler._lazy_init_scale_growth_tracker(self.device)
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(parameters=self.module.parameters(),
+                                        max_norm=self.args.max_grad_norm)
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+                # self.lr_scheduler.step(**(lr_kwargs or {}))
+        if not self.args.half_precision_backend == "amp":
+            self.optimizer.step()
 
         # Modified 
-        if (not self.fp16_enabled()
-                and not self.amp_enabled()):
-            self.zero_grad()
-        else:
-            self.optimizer.zero_grad()
+        # if (not self.fp16_enabled()
+        #         and not self.amp_enabled()):
+        #     self.zero_grad()
+        # else:
+        #     self.optimizer.zero_grad()
 
         report_progress = self.global_rank == 0 if self.global_rank else True
 
@@ -788,5 +808,18 @@ class DeepSpeedEngine(Module):
         for i, bucket_tuple in enumerate(split_buckets):
             bucket_type, bucket = bucket_tuple
             self.allreduce_no_retain(bucket, numel_per_bucket=elements_per_buffer)
-
+    
+    def allreduce_sequence_parallel_gradients(self):
+        grads = []
+        for param in self.module.parameters():
+            if getattr(param, 'sequence_parallel', False):
+                grad = param.grad
+                # dist.all_reduce(grad.data, group=mpu.get_model_parallel_group())
+                grads.append(grad.data)
+        coalesced = _flatten_dense_tensors(grads)
+        dist.all_reduce(
+            coalesced, group=mpu.get_model_parallel_group())
+        for buf, synced in zip(grads, _unflatten_dense_tensors(
+                coalesced, grads)):
+            buf.copy_(synced)
 

@@ -176,14 +176,14 @@ def train(
     else:
         # see __init__. max_steps is set when the dataset has no __len__
         # Setting a very large number of epochs so we go as many times as necessary over the iterator.
-        num_train_epochs = sys.maxsize
+        num_train_epochs = 1
         num_update_steps_per_epoch = max_steps
         num_train_samples = args.max_steps * total_train_batch_size
     num_steps_per_epoch = max_steps // num_train_epochs
 
     # load checkpoint
     epochs_trained = 0
-    if resume_from_checkpoint:
+    if resume_from_checkpoint and os.path.isdir(resume_from_checkpoint):
         iteration = self.load_from_checkpoint(resume_from_checkpoint)
         if self.args.max_steps > 0:
             if iteration < self.args.max_steps:
@@ -252,7 +252,7 @@ def train(
 
     for epoch in range(epochs_trained, num_train_epochs):
         self._reset_dataloader(epoch)
-        print_rank_0("Current processing of training epoch (%d/%d)" % (epoch + 1, num_train_epochs))
+        print_rank_0("\nCurrent processing of training epoch (%d/%d)\n" % (epoch + 1, num_train_epochs))
 
         # Reset the past mems state at the beginning of each epoch if necessary.
         if args.past_index >= 0:
@@ -292,6 +292,7 @@ def train(
                 
             if self.args.output_dir and self.args.save and self.state.global_step % self.args.save_steps == 0:
                 self.save_to_checkpoint()
+                self._rotate_checkpoints(self.args.output_dir)
 
 
             if self.control.should_epoch_stop or self.control.should_training_stop:
@@ -302,6 +303,7 @@ def train(
         self._maybe_log_save_evaluate(tr_loss, model, trial, epoch, ignore_keys_for_eval)
         if self.args.output_dir and self.args.save:
             self.save_to_checkpoint()
+            self._rotate_checkpoints(self.args.output_dir)
 
         if self.control.should_training_stop:
             break

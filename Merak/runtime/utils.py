@@ -13,6 +13,7 @@ import gc
 import torch
 from torch._six import inf
 import torch.distributed as dist
+from torch.autograd.variable import Variable
 
 from ..utils import logger, log_dist
 from math import sqrt
@@ -370,3 +371,83 @@ class CheckOverflow(object):
             if cpu_sum == float('inf') or cpu_sum == -float('inf') or cpu_sum != cpu_sum:
                 return True
             return False
+    
+def custom_backward(output, grad_output):
+    '''Directly call C++ autograd engine.
+
+    To make the 'deallocate_output_tensor' (above) optimization work, the C++
+    autograd engine must be called directly, bypassing Pytorch's
+    torch.autograd.backward. Pytorch's 'backward' checks that the output and
+    grad have the same shape, while C++'s 'backward' does not.
+    '''
+    if isinstance(output, list):
+        for idx in range(len(output)):
+            assert output[idx].numel() == 1, \
+                "output should be pseudo-'freed' in schedule, to optimize memory"
+            assert isinstance(output[idx], torch.Tensor), \
+                "output == '%s'." % type(output[idx]).__name__
+            assert isinstance(grad_output[idx], (torch.Tensor, type(None))), \
+                "grad_output == '%s'." % type(grad_output[idx]).__name__
+
+            # Handle scalar output
+            if grad_output[idx] is None:
+                assert output[idx].numel() == 1, "implicit grad requires scalar output."
+                grad_output[idx] = torch.ones_like(
+                    output[idx],
+                    memory_format = torch.preserve_format,
+                )
+        # Call c++ engine [ see torch/csrc/autograd/python_engine.cpp ]
+        Variable._execution_engine.run_backward(
+            tensors = tuple(output),
+            grad_tensors = tuple(grad_output),
+            keep_graph = False,
+            create_graph = False,
+            inputs = tuple(),
+            allow_unreachable=True,
+            accumulate_grad=True,
+        )
+    else:
+        assert output.numel() == 1, \
+            "output should be pseudo-'freed' in schedule, to optimize memory"
+        assert isinstance(output, torch.Tensor), \
+            "output == '%s'." % type(output[0]).__name__
+        assert isinstance(grad_output, (torch.Tensor, type(None))), \
+            "grad_output == '%s'." % type(grad_output).__name__
+        # Handle scalar output
+        if grad_output is None:
+            assert output.numel() == 1, "implicit grad requires scalar output."
+            grad_output = torch.ones_like(
+                output,
+                memory_format = torch.preserve_format,
+            )
+
+        # Call c++ engine [ see torch/csrc/autograd/python_engine.cpp ]
+        Variable._execution_engine.run_backward(
+            tensors = (output, ),
+            grad_tensors = (grad_output, ),
+            keep_graph = False,
+            create_graph = False,
+            inputs = tuple(),
+            allow_unreachable=True,
+            accumulate_grad=True,
+        )
+
+
+def deallocate_output_tensor(out):
+    '''Pseudo-deallocate (i.e., set to scalar) the output tensor's '.data' field.
+
+    This method should be called right after the output tensor has been
+    sent to the next pipeline stage. At this point, the output tensor is
+    only useful for its '.grad_fn' field, and not its '.data'.
+    '''
+    if out is None:
+        return
+    assert isinstance(out, torch.Tensor), \
+        "expected Tensor, found %s." % type(out).__name__
+    assert out._base is None, \
+        "counter-productive to free a view of another tensor."
+    out.data = torch.empty(
+        (1,),
+        device = out.device,
+        dtype = out.dtype,
+    )

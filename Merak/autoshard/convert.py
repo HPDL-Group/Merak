@@ -22,6 +22,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
+
+from ..utils import get_args
 from .. import print_rank_0
 import copy
 import functools
@@ -45,7 +47,7 @@ from transformers.utils.fx import (HFTracer,
                         _reset_tensor_methods)
 
 from .graph_shard import shard_model_transformers
-from ..modules.layer_proxy import LinearProxy, Conv1DProxy
+from ..modules.layer_proxy import LinearProxy, Conv1DProxy, EmbeddingProxy
 from ..modules.transformer_blocks import PipedGPT2Block
 
 import gc
@@ -79,13 +81,13 @@ def hf_fx_compatibility(model):
     else:
         return False
     
-default_leaf_modules = (LinearProxy, Conv1DProxy, PipedGPT2Block)
+default_leaf_modules = (LinearProxy, Conv1DProxy, EmbeddingProxy, PipedGPT2Block)
 
 def convert_to_sequential(model, args, extra_leaf_modules=(), trace_batch=None):
     added_model = tuple(_generate_supported_model_classes('vit'))
     transformers_fx_models = tuple(_SUPPORTED_MODELS+_SUPPORTED_MODELS_FOR_DYNAMIC_AXES+added_model)
     # print_rank_0(transformers_fx_models)
-    if not args.fp16:
+    if not args.fp16 and args.half_precision_backend != "apex":
         model.cpu()
     if isinstance(model, transformers_fx_models):
 
@@ -213,6 +215,7 @@ class MpTracer(HFTracer):
     
     def _generate_dummy_input(self, model, input_name):
         """Generates dummy input for model inference recording."""
+        args = get_args()
         model_class = model.__class__
         device = model.device
         # device = 'cpu'
@@ -257,6 +260,13 @@ class MpTracer(HFTracer):
             shape = self.encoder_shape if "decoder" not in input_name else self.decoder_shape
             shape += [model.config.hidden_size]
             inputs_dict[input_name] = torch.ones(shape, dtype=torch.float, device=device)
+
+        if args.fp16 or args.half_precision_backend == "apex":
+            half_inputs_dict = {}
+            for k, v in inputs_dict.items():
+                half_inputs_dict[k] = v.half()
+            inputs_dict = half_inputs_dict
+
         return inputs_dict
 
     def trace(self, root: PreTrainedModel, concrete_args = None, method_names=None):

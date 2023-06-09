@@ -25,7 +25,7 @@ def load_config(model_name):
             'task_specific_params': {'text-generation': {'do_sample': True, 'max_length': 50}}, 
             'vocab_size': 50344,
             'return_dict': False,
-            'reorder_and_upcast_attn': True,
+            'reorder_and_upcast_attn': False,
             'use_cache': False
             }
     elif model_name == "t5-base":

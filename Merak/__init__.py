@@ -29,13 +29,14 @@ def print_rank_0(message):
         print(message, flush=True)
 
 
-from .modules.layer_proxy import Conv1DProxy, LinearProxy
+from .modules.layer_proxy import Conv1DProxy, LinearProxy, EmbeddingProxy
 
 func_bak = (transformers.modeling_utils.Conv1D, torch.nn.Linear)
 
 # monkey patch for proxy layers
 transformers.modeling_utils.Conv1D = Conv1DProxy
 torch.nn.Linear = LinearProxy
+torch.nn.Embedding = EmbeddingProxy
 
 def get_patched_func():
     return func_bak

@@ -40,6 +40,8 @@ from .layers import LayerNorm
 from .layers import ColumnParallelLinear
 from .layers import RowParallelLinear
 from .layers import VocabParallelEmbedding
+from .layers import RowSequenceParallel
+from .layers import ColumnSequenceParallel
 
 from .mappings import copy_to_model_parallel_region
 from .mappings import gather_from_model_parallel_region

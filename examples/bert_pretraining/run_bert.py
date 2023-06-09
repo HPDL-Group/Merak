@@ -17,7 +17,7 @@
 
 # using our distributed trainer
 import Merak
-from Merak import MerakArguments, MerakTrainer, mpu
+from Merak import MerakArguments, MerakTrainer, mpu, print_rank_0
 from Merak.utils.checkpoint import load_checkpoint, save_checkpoint
 
 import os
@@ -67,7 +67,8 @@ def main():
     set_seed(training_args.seed)
 
     # create dataset
-    train_dataset = HDF5Dataset(args, training_args, json_file="./json_dir_2/data_info_{length}_{size}_{rank}.json".format(length=args.max_pred_length, size=mpu.get_data_parallel_world_size(),
+    print_rank_0("create data json file...")
+    train_dataset = HDF5Dataset(args, training_args, json_file="./json/data_info_{length}_{size}_{rank}.json".format(length=args.max_pred_length, size=mpu.get_data_parallel_world_size(),
                                                                                                              rank=mpu.get_data_parallel_rank()), max_pred_length=args.max_pred_length)
 
     # set model config
@@ -147,12 +148,12 @@ def main():
                 raise ValueError("Cannot find checkpoint files")
             return iteration
 
-        def save_to_checkpoint(self):
+        def save_to_checkpoint(self, best_model=None):
             kwargs = {"file_idx": self.train_dataset.file_idx}
             if self.args.half_precision_backend == "apex":
                 kwargs['master params'] = list(amp.master_params(self.optimizer))
-            save_checkpoint(self.state.global_step, self.pipe_model, self.optimizer,
-                            self.lr_scheduler, self.args, **kwargs)
+            save_checkpoint(self.state.global_step, self.pipe_model, self.optimizer, 
+                            self.lr_scheduler, best_model, self.args, **kwargs)
 
 
     # using our distributed trainer

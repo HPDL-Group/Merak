@@ -23,12 +23,12 @@ import copy
 import os
 
 from types import MethodType
-from inspect import isgenerator
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.distributed as dist
+from torch.utils.data.dataloader import _MultiProcessingDataLoaderIter, _SingleProcessDataLoaderIter
 
 from ..utils.logging import logger
 from ..utils.timer import SynchronizedWallClockTimer, ThroughputTimer, set_timer_log_rank
@@ -43,6 +43,8 @@ from ..mpu.p2p_communication import recv_forward, send_backward, recv_backward, 
 from .checkpointing import pre_checkpoint as pre_checkpoint_func
 from .checkpointing import RNGManager
 
+from .utils import custom_backward, deallocate_output_tensor
+from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
 
 TARGET_ID = -2
 LOG_STAGE = -2
@@ -129,8 +131,8 @@ class PipelineEngine(DeepSpeedEngine):
         elif self.train_schedule == 'ds_default':
             TrainScheduleClass = schedule.TrainSchedule
         else:
-            # if not self.is_last_stage():
-            #     assert self.module.activation_checkpoint_interval > 0, 'should use checkpoint layer'
+            assert self.micro_batches >= self.num_stages, \
+                'please fill pipelines with larger number of microbatches (gradient_accumulation_steps in training args).'
             if self.train_schedule == 'pre_recompute_1f1b':
                 TrainScheduleClass = schedule.PreRecomputeTrainSchedule
             elif self.train_schedule == 'last_no_recompute_1f1b':
@@ -138,6 +140,8 @@ class PipelineEngine(DeepSpeedEngine):
                     self.module.activation_checkpoint_interval = 0
                 TrainScheduleClass = schedule.LastNoRecomputeTrainSchedule
             elif self.train_schedule == 'full_critical_path_1f1b':
+                assert self.micro_batches >= 4, \
+                'number of microbatches (gradient_accumulation_steps in training args) should be larger than 4.'
                 if self.is_last_stage():
                     self.module.activation_checkpoint_interval = 0
                 TrainScheduleClass = schedule.FullCriticalPathTrainSchedule
@@ -267,6 +271,8 @@ class PipelineEngine(DeepSpeedEngine):
 
     def _exec_reduce_grads(self):
         self._force_grad_boundary = True
+        if self.args.sequence_parallel:
+            self.allreduce_sequence_parallel_gradients()
         if self.pipeline_enable_backward_allreduce:
             self.timers('backward_allreduce').start()
             self.allreduce_gradients(bucket_size=MEMORY_OPT_ALLREDUCE_SIZE)
@@ -371,7 +377,7 @@ class PipelineEngine(DeepSpeedEngine):
         # TODO: should return precisely what loss returned and allow others to be queried?
         return self.agg_train_loss
 
-    def eval_batch(self, data_iter, compute_loss=True, reduce_output='avg'):
+    def eval_batch(self, compute_loss=True, reduce_output='avg'):
         """Evaluate the pipeline on a batch of data from ``data_iter``. The
         engine will evaluate ``self.train_batch_size()`` total samples
         collectively across all workers.
@@ -409,10 +415,10 @@ class PipelineEngine(DeepSpeedEngine):
 
         self._compute_loss = compute_loss
 
-        # Use the provided data iterator
-        train_iterator = self.data_iterator
-        self.set_dataiterator(data_iter)
-        self.set_dataloader(data_iter)
+        # # Use the provided data iterator
+        # train_iterator = self.data_iterator
+        # self.set_dataiterator(data_iter)
+        # self.set_dataloader(data_iter)
 
         # Do the work
         sched = schedule.InferenceSchedule(micro_batches=self.micro_batches,
@@ -437,7 +443,7 @@ class PipelineEngine(DeepSpeedEngine):
                 self.summary_writer.flush()
 
         # Restore the training iterator
-        self.set_dataiterator(train_iterator)
+        # self.set_dataiterator(train_iterator)
         if self.return_logits and self.is_last_stage():
             return eval_output, self.logits, self.labels
         else:
@@ -581,7 +587,7 @@ class PipelineEngine(DeepSpeedEngine):
     def _next_batch(self):
         batch = None
         if self.data_iterator is not None:
-            if not isgenerator(self.data_iterator):
+            if not isinstance(self.data_iterator, (_MultiProcessingDataLoaderIter, _SingleProcessDataLoaderIter)):
                 self.data_iterator = iter(self.data_iterator)
 
             batch = next(self.data_iterator)
@@ -682,9 +688,15 @@ class PipelineEngine(DeepSpeedEngine):
             out_tensors = [t for t in outputs if t.requires_grad]
             if not len(out_tensors) == len(grad_tensors):
                 grad_tensors = [grad_tensors[t] for t in range(len(outputs)) if outputs[t].requires_grad]
-            torch.autograd.backward(tensors=out_tensors, grad_tensors=grad_tensors)
+            if self.args.dealloc_pipeoutput:
+                custom_backward(out_tensors, grad_tensors)
+            else:
+                torch.autograd.backward(tensors=out_tensors, grad_tensors=grad_tensors)
         else:
-            torch.autograd.backward(tensors=(outputs, ), grad_tensors=(grad_tensors, ))
+            if self.args.dealloc_pipeoutput:
+                custom_backward(outputs, grad_tensors)
+            else:
+                torch.autograd.backward(tensors=(outputs, ), grad_tensors=(grad_tensors, ))
 
         # Free up the memory from the output of forward()
         self.pipe_buffers['outputs'][buffer_id] = None
@@ -846,15 +858,27 @@ class PipelineEngine(DeepSpeedEngine):
             self.first_output_send = False
             self._send_tensor_meta(outputs, self.next_stage)
 
+        if self.grad_layer is None:
+            if isinstance(outputs, torch.Tensor):
+                s = list(outputs.size())
+                self.grad_layer = self._allocate_buffer(s, num_buffers=1)[0]
+            else:
+                sizes = [list(t.size()) for t in outputs if t.is_floating_point()]
+                self.grad_layer = self._allocate_buffers(sizes, num_buffers=1)[0]
+                
         if isinstance(outputs, torch.Tensor):
             if not self.is_last_stage() and outputs.dtype != self.communication_data_type():
                 outputs = outputs.to(self.communication_data_type())
             send_forward(outputs)
+            if self.args.dealloc_pipeoutput:
+                deallocate_output_tensor(outputs)
         elif isinstance(outputs, tuple):
             for idx, buffer in enumerate(outputs):
                 if not self.is_last_stage() and buffer.dtype != self.communication_data_type():
                     buffer = buffer.to(self.communication_data_type())
                 send_forward(buffer)
+                if self.args.dealloc_pipeoutput:
+                    deallocate_output_tensor(buffer)
         else:
             raise NotImplementedError('Could not send output of type '
                                       f'{type(outputs)}')
@@ -1035,6 +1059,8 @@ class PipelineEngine(DeepSpeedEngine):
             if not self.is_last_stage() and activations.dtype != self.communication_data_type():
                 activations = activations.to(self.communication_data_type())
             send_forward_recv_backward(activations, self.grad_layer)
+            if self.args.dealloc_pipeoutput:
+                deallocate_output_tensor(activations)
         else:
             assert isinstance(outputs, tuple)
             activations_list = []
@@ -1043,6 +1069,8 @@ class PipelineEngine(DeepSpeedEngine):
             activations = tuple(activations_list)
             for idx, buffer in enumerate(self.grad_layer):
                 send_forward_recv_backward(activations[idx], buffer)
+                if self.args.dealloc_pipeoutput:
+                    deallocate_output_tensor(activations[idx])
 
         # print('after', self.global_rank, self.grad_layer)
         if self.wall_clock_breakdown():
@@ -1172,6 +1200,13 @@ class PipelineEngine(DeepSpeedEngine):
         if isinstance(outputs, tuple) and len(outputs) == 1:
             outputs = outputs[0]
         self.pipe_buffers['outputs'][buffer_id] = outputs
+
+        if self.args.dealloc_pipeoutput:
+            if isinstance(outputs, torch.Tensor):
+                deallocate_output_tensor(outputs)
+            else:
+                for idx, values in enumerate(outputs):
+                    deallocate_output_tensor(values)
 
         self.rng_manager.restore_bwd_rng_state(buffer_id)
 

@@ -67,7 +67,7 @@ def main():
     model = T5ForConditionalGeneration(config)
 
     # create dataset
-    dataset = Prepare_data(tokenizer, input_length=512, output_length=512)
+    dataset = Prepare_data(model, tokenizer, input_length=512, output_length=512)
 
     trainer = MerakTrainer(
         model=model,

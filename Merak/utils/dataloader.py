@@ -24,7 +24,6 @@ from torch.utils.data.distributed import DistributedSampler
 import collections
 import warnings
 import datasets
-from collections.abc import Mapping
 from .. import mpu
 from .. import print_rank_0
 

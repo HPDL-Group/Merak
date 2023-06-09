@@ -41,7 +41,8 @@ Extra parameters:
 -   init_method_std (float, defaults to 0.02) -- Standard deviation of the zero mean normal distribution used for tp weight initialization in Megatron.
 -   activation_checkpointing (bool, defaults to True) -- Whether to use activation checkpointing. 
 -   checkpoint_num_layers (int, defaults to 1) -- Chunk size (number of layers) for checkpointing.
--   input_names (List[str], Optional, defaults to None) -- The names of the inputs of the traced model. If unset, model.dummy_inputs().keys() are used instead. Example: ['input_ids', 'attention_mask', 'token_type_ids']
+-   input_names (List[str], Optional, defaults to None) -- The names of the inputs of the traced model. If unset, model.dummy_inputs().keys() are used instead. 
+                                                           Example: ['input_ids', 'attention_mask', 'token_type_ids']
 -   num_layers (int, Optional, defaults to None) -- Number of hidden layers in the Transformer, will try to get this in model config.
 -   seq_length (int, Optional, defaults to None) -- The maximum sequence length that this model might ever be used with, will try to get this in model config.
 -   wall_clock_breakdown (bool, defaults to False) -- Whether to log detail time spend on each rank.
@@ -55,6 +56,10 @@ Extra parameters:
 -   no_load_rng (bool, defaults to False) -- Do not load current optimizer.
 -   no_load_optim (bool, defaults to False) -- Do not load current optimizer.
 -   split_inputs (bool, defaults to False) -- Whether to split input data.
+-   parallel_vocab (bool, defaults to False) -- Whether to parallel vocabulary when TMP > 1.
+-   sequence_parallel (bool, defaults to False) -- Whether to use sequence parallel when TMP > 1.
+-   sequence_dim (int, defaults to 1) -- Sequence length dimension in hidden states.
+-   dealloc_pipeoutput (bool, defaults to False) -- Whether to dealloc pipeline sended activation output.
 -   activation_checkpoint_ratio (float, Optional, defaults to None) -- activation checkpoint ratio of first stage, in range(0,1). Default to None.
 -   tp_overlapping_level (float, Optional, defaults to 0) -- "Possible tensor parallelism communication overlapping level from 0 to 3.
                                                               0 refers to no overlapping; 1 refers to only overlap within linear function;
@@ -69,6 +74,11 @@ Extra parameters:
 -   loss_scale_window (int, defaults to 1000) -- 'loss_scale_window is a fp16 parameter representing the window over which to raise/lower the dynamic loss scale value.'
 -   hysteresis (int, defaults to 2) -- 'hysteresis is a fp16 parameter representing the delay shift in dynamic loss scaling.'
 -   min_loss_scale (int, defaults to 1) -- 'min_loss_scale is a fp16 parameter representing the minimum dynamic loss scale value.'
+-   custom_partition (float, str, defaults to None) -- 'Customize the partition size of the model. Length of list is pipeline_world_size + 1.
+                                                       'Example: [0, 6, 12, 18, 26, ..., last_layer_idx]', Default to None.
+-   no_tie_modules (bool, defaults to False) -- Whether to set tie modules.
+-   save_total_limit (int, defaults to -1) -- Limit the max numbers of checkpoints.
+-   eval_iters (int, defaults to None) -- Number of iterations to run for evaluationvalidation/test for.
 
 
 

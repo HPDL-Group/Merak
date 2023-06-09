@@ -17,6 +17,7 @@
 
 # Parts of the code here are adapted from https://github.com/huggingface/transformers/blob/v4.15.0/examples/pytorch/image-classification/run_image_classification.py
 
+import os
 from PIL import Image
 import torch
 from torchvision.transforms import (
@@ -31,6 +32,7 @@ from torchvision.transforms import (
 import numpy as np
 import datasets
 from datasets import load_dataset
+from sklearn.metrics import accuracy_score
 
 def pil_loader(path: str):
     with open(path, "rb") as f:
@@ -56,17 +58,21 @@ def collate_fn(examples):
 
 # Define our compute_metrics function. It takes an `EvalPrediction` object (a namedtuple with a
 # predictions and label_ids field) and has to return a dictionary string to float.
-def compute_metrics(p):
+def compute_metrics(p, normalize=True, sample_weight=None):
     """Computes accuracy on a batch of predictions"""
     # Load the accuracy metric from the datasets package
-    metric = datasets.load_metric("accuracy")
-    return metric.compute(predictions=np.argmax(p.predictions, axis=1), references=p.label_ids)
+    metric = {
+            "accuracy": accuracy_score(
+                p.label_ids, np.argmax(p.predictions, axis=1), normalize=normalize, sample_weight=sample_weight
+            ).item(),
+        }
+    return metric
 
 def prepare_dataset(data_path, cache_dir):
     # Initialize our dataset and prepare it for the 'image-classification' task.
     data_files = {}
-    data_files['train'] = data_path + "train/**"
-    data_files['validation'] = data_path + "val/**"
+    data_files['train'] = os.path.join(data_path, "train/**")
+    data_files['validation'] = os.path.join(data_path, "val/**")
     ds = load_dataset(
         'imagefolder',
         # data_args.dataset_config_name,

@@ -1,15 +1,15 @@
 // Copyright (c) 2022, HPDL group, PDL lab, NUDT.  All rights reserved.
-//
+// 
 // Maintainer: Wjliu (mcmillantac@163.com)
-// Algorithm of paper: < AutoPipe: A Fast Pipeline Parallelism Approach
+// Algorithm of paper: < AutoPipe: A Fast Pipeline Parallelism Approach 
 // with Balanced Partitioning and Micro-batch Slicing >
-//
+// 
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
-//
+// 
 //     http://www.apache.org/licenses/LICENSE-2.0
-//
+// 
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -30,11 +30,11 @@ using namespace std;
 // Constants.
 /***************************Begin******************************/
 // Communication overhead for a vector with size [b, s, h](us).
-const long long kCommunicationOverhead = 0;
+const long long kCommunicationOverhead = 0; 
 /*************************** End ******************************/
 
-// Return detail information about block partition for kNumPipelineStages.
-vector<vector<int>> BlockPartitionAlgorithm(vector<int>& model, int& num_pipeline_stages, vector<vector<long long>>& block_time_mapping);
+// Return detail information about block partition for kNumPipelineStages. 
+vector<vector<int>> BlockPartitionAlgorithm(vector<int>& model, int& num_pipeline_stages, vector<vector<long long>>& block_time_mapping); 
 
 // Reconstruct the dynamic programming in a recursive way and put the result in block_partition variable.This process can be finish by the following two functions.The ReconstructBlockPartitionsFrontToBack function searches the result from front to back during reconstruct, which has a trend to put the stage of critical path later, while the ReconstructBlockPartitionsBackToFront function searches the result from back to front during reconstruct, which has a trend to put the stage of critical path earlier.
 void ReconstructBlockPartitionsFrontToBack(vector<int>& model, vector<long long>& prefix_sum, vector<vector<long long>>& dp, int remaining_model_blocks, int remaining_partitions, vector<vector<int>>& block_partition);
@@ -58,7 +58,7 @@ long long CalculationForCooldownPhase(int& num_pipeline_stages, int& stage_of_cr
 void OutputResult(vector<vector<int>>& block_partition, int& stage_of_critical_path, long long& block_partition_cost);
 
 // Find minimum time cost overall block partitions for kNumPipelineStages with heuristic algorithm.Return the optimal block partition and corresponding time costs.
-vector<vector<int>> FindBestBlockPartition(vector<vector<long long>>& block_time_mapping, int& num_pipeline_stages, vector<vector<int>>& initial_block_partition, int& stage_of_critical_path, long long& minimum_time_costs, vector<long long>& prefix_sum, vector<vector<long long>>& dynamic_programming_array);
+vector<vector<int>> FindBestBlockPartition(vector<vector<long long>>& block_time_mapping, int& num_pipeline_stages, vector<vector<int>>& initial_block_partition, int& stage_of_critical_path, long long& minimum_time_costs, vector<long long>& prefix_sum, vector<vector<long long>>& dynamic_programming_array); 
 
 // Get the prefix sum array and corresponding dynamic programming array of the model.
 void GetPrefixSumArrayAndDpArray(vector<int>& model, int& num_pipeline_stages, vector<vector<long long>>& block_time_mapping, vector<long long>& prefix_sum, vector<vector<long long>>& dynamic_programming_array);
@@ -103,7 +103,7 @@ vector<int> MerakPipe(vector<long long> model_calculation_forward, vector<long l
     // cout << "------------------------------------------------------------" << endl;
     // cout << "                Algorithm Time Cost:" << (double)(end - start) / CLOCKS_PER_SEC << " s " << endl;
     // cout << "------------------------------------------------------------" << endl;
-    // OutputResult(optimal_block_partition, stage_of_critical_path, minimum_time_costs);
+    // OutputResult(optimal_block_partition, stage_of_critical_path, minimum_time_costs); 
     vector<int> ret;
     for(auto& partition: optimal_block_partition) {
         ret.push_back(partition[0]);
@@ -135,7 +135,7 @@ vector<vector<int>> FindBestBlockPartition(vector<vector<long long>>& block_time
         pair<long long, int> cur_block_partition_time_cost_and_stage_of_critical_path_base = TrainingTimeCalculation(cur_block_partition, block_time_mapping);
         long long cur_block_partition_time_cost_base = cur_block_partition_time_cost_and_stage_of_critical_path_base.first;
         int cur_stage_of_critical_path_base = cur_block_partition_time_cost_and_stage_of_critical_path_base.second;
-
+        
         if(optimal_block_partition_time_cost > cur_block_partition_time_cost_base) {
             optimal_block_partition = cur_block_partition;
             optimal_block_partition_time_cost = cur_block_partition_time_cost_base;
@@ -218,7 +218,7 @@ vector<vector<int>> FindBestBlockPartition(vector<vector<long long>>& block_time
                     continue_adjust = false;
                 }
             }
-        }
+        }   
 
         // Try to move the stage of critical path to front stage by moving one block from current block partition's stage of critical path unless current stage of critical path is the first stage.
         if(cur_stage_of_critical_path_base > 0) {
@@ -236,11 +236,11 @@ vector<vector<int>> FindBestBlockPartition(vector<vector<long long>>& block_time
             model_before_stage_of_critical_path.push_back(cur_block_partition[from_stage][0]);
             vector<vector<int>> move_to_front;
             ReconstructBlockPartitionsFrontToBack(model_before_stage_of_critical_path, prefix_sum, dynamic_programming_array, model_before_stage_of_critical_path.size(), from_stage, move_to_front);
-            // Reverse the order of model block partition as it is in the reverse order when reconstruct from the dynamic programming algorithm.
+            // Reverse the order of model block partition as it is in the reverse order when reconstruct from the dynamic programming algorithm. 
             reverse(move_to_front.begin(), move_to_front.end());
             // Pop the last element of model blocks.
             model_before_stage_of_critical_path.pop_back();
-
+            
             // Complete model block partition.
             for(int stage = from_stage; stage < cur_block_partition.size(); stage++) {
                 move_to_front.push_back(cur_block_partition[stage]);
@@ -248,7 +248,7 @@ vector<vector<int>> FindBestBlockPartition(vector<vector<long long>>& block_time
             // Remove the redundant model block.
             move_to_front[from_stage].erase(move_to_front[from_stage].begin());
             // The stage of critical path must move to front when we move a block to front,so we do not need to validate the stage of critical path after this operation.
-            // Note that we remove redundancy during this process.
+            // Note that we remove redundancy during this process. 
             if(!record.count(move_to_front)){
                 possible_block_partitions.push(move_to_front);
                 record[move_to_front] = 1;
@@ -263,7 +263,7 @@ vector<vector<int>> FindBestBlockPartition(vector<vector<long long>>& block_time
                 // Get the relative balance partition from dynamic programming array for block partition adjustion.
                 vector<vector<int>> move_to_back;
                 ReconstructBlockPartitionsFrontToBack(model_before_stage_of_critical_path, prefix_sum, dynamic_programming_array, model_before_stage_of_critical_path.size(), from_stage + 1, move_to_back);
-                // Reverse the order of model block partition as it is in the reverse order when reconstruct from the dynamic programming algorithm.
+                // Reverse the order of model block partition as it is in the reverse order when reconstruct from the dynamic programming algorithm. 
                 reverse(move_to_back.begin(), move_to_back.end());
                 // Complete model block partition.
                 for(int stage = from_stage + 1; stage < cur_block_partition.size(); stage++) {
@@ -276,11 +276,11 @@ vector<vector<int>> FindBestBlockPartition(vector<vector<long long>>& block_time
                 if(move_to_back_block_partition_time_cost_and_stage_of_critical_path.second <= cur_stage_of_critical_path_base) {
                     // Note we need to remove the redundancy during this process.
                     if(!record.count(move_to_back)){
-                        possible_block_partitions.push(move_to_back);
-                        record[move_to_back] = 1;
+                        possible_block_partitions.push(move_to_back); 
+                        record[move_to_back] = 1;                
                     }
-                }
-            }
+                }   
+            } 
         }
     }
     minimum_time_costs = optimal_block_partition_time_cost;
@@ -405,7 +405,7 @@ pair<long long, int> TrainingTimeCalculation(vector<vector<int>>& block_partitio
         long long forward_time_for_stage_i = 0, backward_time_for_stage_i = 0;
         for(int& block_type:block_partition[i - 1]) {
             forward_time_for_stage_i += block_time_mapping[0][block_type];
-            backward_time_for_stage_i += block_time_mapping[1][block_type];
+            backward_time_for_stage_i += block_time_mapping[1][block_type]; 
         }
         forward_time[i] = forward_time_for_stage_i;
         backward_time[i] = backward_time_for_stage_i;
@@ -445,7 +445,7 @@ void CalculationForRelevantArray(vector<vector<int>>& block_partition, vector<ve
         long long forward_time_for_stage_i = 0, backward_time_for_stage_i = 0;
         for(int& block_type:block_partition[i - 1]) {
             forward_time_for_stage_i += block_time_mapping[0][block_type];
-            backward_time_for_stage_i += block_time_mapping[1][block_type];
+            backward_time_for_stage_i += block_time_mapping[1][block_type]; 
         }
         forward_time[i] = forward_time_for_stage_i;
         backward_time[i] = backward_time_for_stage_i;
@@ -509,7 +509,7 @@ pair<long long, int>  CalculationForSteadyPhase(vector<int>& last_batch,vector<l
             if(dp[stage_of_critical_path + 1][num_microbatch][0] != dp[stage_of_critical_path + 1][num_microbatch - 1][1] + backward_time[stage_of_critical_path + 1] + forward_communication_overhead) break;
             // Judgement for backward microbatch
             if(dp[stage_of_critical_path + 1][num_microbatch][1] != dp[stage_of_critical_path + 1][num_microbatch][0] + forward_time[stage_of_critical_path + 1] + backward_communication_overhead) break;
-        }
+        } 
         if(num_microbatch == last_batch[stage_of_critical_path] + 1) break;
         stage_of_critical_path--;
     }
@@ -541,8 +541,8 @@ pair<long long, int>  CalculationForSteadyPhase(vector<int>& last_batch,vector<l
     return make_pair(dp[stage_of_critical_path + 1][last_batch[stage_of_critical_path]][0], stage_of_critical_path);
 }
 
-// CalculationForCooldownPhase function which take ealier stages into
-// consideration when calculating the start time.By considering the ealiser stages, we can
+// CalculationForCooldownPhase function which take ealier stages into 
+// consideration when calculating the start time.By considering the ealiser stages, we can 
 // take into account the case of communication congestion.
 long long CalculationForCooldownPhase(int& num_pipeline_stages, int& stage_of_critical_path, long long& last_forward_microbatch_start_time, vector<long long>& forward_time, vector<long long>& backward_time) {
     // Initialize the dynamic programming array.
@@ -566,7 +566,7 @@ long long CalculationForCooldownPhase(int& num_pipeline_stages, int& stage_of_cr
             // Add communication overhead during dynamic programming.Add communication overhead for first stage,even though it does not send backward to previous stage,it needs a idle time to receive backward from next stage.
             dp[row][col] += kCommunicationOverhead;
 
-            // Take ealier stages into consideration.By considering the ealiser stages, we can
+            // Take ealier stages into consideration.By considering the ealiser stages, we can 
             // take into account the case of communication congestion.For the stage of critical /// path, we do not take ealier stages into consideration as it dominates them.
             if(row > 0) {
                 dp[row][col] = max(dp[row][col], dp[row - 1][col + 1]);

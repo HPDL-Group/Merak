@@ -51,6 +51,14 @@ class ColPara(torch.nn.Module):
                 gather_output=gather_output,
                 init_method=init_method,
                 skip_bias_add=False)
+        elif args.sequence_parallel:
+            self.col_linear = mpu.ColumnSequenceParallel(
+                in_feature,
+                out_feature,
+                bias=bias,
+                gather_output=gather_output,
+                init_method=init_method,
+                skip_bias_add=False)
         else:
             self.col_linear = mpu.ColumnParallelLinear(
                 in_feature,
@@ -102,6 +110,14 @@ class RowPara(torch.nn.Module):
                 input_is_parallel=input_is_parallel,
                 init_method=output_layer_init_method,
                 skip_bias_add=False)
+        elif args.sequence_parallel:
+            self.row_linear = mpu.RowSequenceParallel(
+                in_feature,
+                out_feature,
+                bias=bias,
+                input_is_parallel=input_is_parallel,
+                init_method=output_layer_init_method,
+                skip_bias_add=False)
         else:
             self.row_linear = mpu.RowParallelLinear(
                 in_feature,
@@ -127,6 +143,16 @@ class RowPara(torch.nn.Module):
                 return output, bias
             return output
 
+
+class SequenceParallelEmb(torch.nn.Module):
+    def __init__(self, *module_args):
+        super(SequenceParallelEmb, self).__init__()
+        self.emb = torch.nn.Embedding(*module_args)
+    
+    def forward(self, x):
+        x = self.emb(x)
+        x = mpu.mappings.scatter_to_sequence_parallel_region(x)
+        return x
 
 
 def get_async_op_hook(grad):

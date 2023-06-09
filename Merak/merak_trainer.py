@@ -28,9 +28,9 @@ from . import print_rank_0, get_grid, get_topo, get_patched_func
 from . import mpu
 from .mpu.initialize import _set_random_seed
 
-from .modules.utils import get_params_for_weight_decay_optimization
+from .modules.utils import get_params_for_weight_decay_optimization, init_method_normal
 from .modules.module import PipelineModule
-from .modules.layer_proxy import Conv1DProxy, LinearProxy
+from .modules.layer_proxy import Conv1DProxy, LinearProxy, EmbeddingProxy
 from .modules.mp_attrs import set_mp_attr, mp_is_setted, set_tp_layer_lists
 from .modules.mp_layers import ColPara
 
@@ -56,6 +56,8 @@ from transformers.trainer_pt_utils import (
     IterableDatasetShard,
 )
 
+from pathlib import Path
+import shutil
 
 
 class MerakTrainer(Trainer):
@@ -104,7 +106,7 @@ class MerakTrainer(Trainer):
         else:
             mergeargs(self.args, self.model)
 
-        if self.args.fp16:
+        if self.args.fp16 or self.args.half_precision_backend == "apex":
             self.model = self.model.half()
 
         assert dist.get_world_size() == self.pp*self.mp*self.dp, 'pp*tp*dp must equal to world size'
@@ -155,6 +157,8 @@ class MerakTrainer(Trainer):
         _set_random_seed(self.args.seed)
 
         if self.mp > 1:
+            if self.args.sequence_parallel:
+                mpu.mappings.set_sequence_dim(self.args.sequence_dim)
             model_class = self.model.__class__
             if self.args.tp_overlapping_level > 1:
                 from .modules.transformer_blocks import PipedGPT2Model, tp_overlapping_available, PipedGPT2Block
@@ -182,6 +186,11 @@ class MerakTrainer(Trainer):
             print_rank_0(self.model)
 
         emb_dim = set()
+        def add_dim(emb_dim, m):
+            if isinstance(m, (EmbeddingProxy, LinearProxy)):
+                emb_dim.add(m.weight_shape)
+            else:
+                emb_dim.add(m.weight.shape)
         hf_config=None
         if hasattr(self.model, 'config'):
             hf_config = self.model.config
@@ -189,15 +198,15 @@ class MerakTrainer(Trainer):
                 for m in self.model.modules():
                     try:
                         if hasattr(m, 'get_input_embeddings') and m.get_input_embeddings() is not None:
-                            emb_dim.add(m.get_input_embeddings().weight.shape)
+                            add_dim(emb_dim, m.get_input_embeddings())
                         if hasattr(m, 'get_output_embeddings') and m.get_output_embeddings() is not None:
-                            emb_dim.add(m.get_output_embeddings().weight.shape)
+                            add_dim(emb_dim, m.get_output_embeddings())
                     except AttributeError:
                         continue
         elif hasattr(self.model, 'get_input_embeddings'):
-            emb_dim.add(self.model.get_input_embeddings().weight.shape)
+            add_dim(emb_dim, self.model.get_input_embeddings())
         elif hasattr(self.model, 'get_output_embeddings'):
-            emb_dim.add(self.model.get_output_embeddings().weight.shape)
+            add_dim(emb_dim, self.model.get_output_embeddings())
         
         # see_memory_usage('**** \n memory consumption after replacing mp', force=True)
         if self.args.input_names is None and hf_fx_compatibility(self.model): 
@@ -236,7 +245,8 @@ class MerakTrainer(Trainer):
                                 activation_checkpoint_func=checkpoint_func, 
                                 activation_checkpoint_ratio = self.args.activation_checkpoint_ratio,
                                 tie_dims=emb_dim,
-                                input_to_shard_dic=input_to_shard_dic)
+                                input_to_shard_dic=input_to_shard_dic,
+                                sequence_parallel=self.args.sequence_parallel)
 
         self.input_to_stage_dic = pipe_model.input_to_stage_dic
 
@@ -256,25 +266,35 @@ class MerakTrainer(Trainer):
                     ## compound module, go inside it
                     build_module(module, proxy_layer, init_args)
         
-        build_module(pipe_model, Conv1DProxy, (self.args.init_method_std, self.args.num_layers))              
-        build_module(pipe_model, LinearProxy, (self.args.init_method_std, self.args.num_layers))              
-
+        build_module(pipe_model, Conv1DProxy, (self.args.init_method_std, self.args.num_layers))
+        build_module(pipe_model, LinearProxy, (self.args.init_method_std, self.args.num_layers))
+        init_method = init_method_normal(self.args.init_method_std)
+        build_module(pipe_model, EmbeddingProxy, (self.args.sequence_parallel, init_method))
+        
         if self.mp > 1:
             if self.args.parallel_vocab:
                 # replace loss function
-                self.loss_fn = mpu.vocab_parallel_cross_entropy
+                pipe_model.loss_fn = self.get_vocab_loss_fn()
                 # replace module to VocabParallelEmbedding and column parallel
-                def replace_module(model, to_replaced, module_func, get_args):
+                def replace_module(model, to_replaced, module_func, get_args, sequence_parallel):
                     for n, module in model.named_children():
+                        if sequence_parallel and isinstance(module, torch.nn.LayerNorm):
+                            setattr(module.weight, 'sequence_parallel', self.args.sequence_parallel)
+                            setattr(module.bias, 'sequence_parallel', self.args.sequence_parallel)
                         if isinstance(module, to_replaced) and str(module.weight.shape).replace(".", "_") in pipe_model.tied_modules_keys:
                             setattr(model, n, module_func(*get_args(module)))
                         if len(list(module.children())) > 0:
-                            replace_module(module, to_replaced, module_func, get_args)
-                replace_module(pipe_model, torch.nn.Embedding, mpu.VocabParallelEmbedding,
-                                lambda x: (x.weight.size(0), x.weight.size(1)))
-                replace_module(pipe_model, torch.nn.Linear, ColPara,
-                                lambda x: (x.in_features, x.out_features, torch.nn.init.xavier_normal_,(x.bias is not None),True))
-
+                            replace_module(module, to_replaced, module_func, get_args, sequence_parallel)
+                replace_module(pipe_model, torch.nn.Embedding, mpu.VocabParallelEmbedding, 
+                                lambda x: (x.weight.size(0), x.weight.size(1), init_method), False)
+                if self.args.sequence_parallel:
+                    # input_size, output_size, bias=True, gather_output=True,init_method=init.xavier_normal_
+                    replace_module(pipe_model, torch.nn.Linear, mpu.ColumnSequenceParallel, 
+                                    lambda x: (x.in_features, x.out_features, (x.bias is not None),False,torch.nn.init.xavier_normal_), True)   
+                else:    
+                    # in_feature,out_feature,bias=bias,gather_output=gather_output,init_method=init_method    
+                    replace_module(pipe_model, torch.nn.Linear, mpu.ColumnParallelLinear, 
+                                    lambda x: (x.in_features, x.out_features, (x.bias is not None),False,torch.nn.init.xavier_normal_), False)                
                 keys_mapping = {str(i).replace(".", "_") : f'torch_Size([{i[0]//self.mp}, {i[1]}])' for i in emb_dim}
                 pipe_model.tied_modules_keys = set(keys_mapping.values())
                 new_tied_dic = {keys_mapping[i] : pipe_model.tied_stage[i] for i in pipe_model.tied_stage}
@@ -290,7 +310,8 @@ class MerakTrainer(Trainer):
                             first = False
                 last.is_last_layer = True
 
-        pipe_model.tie_modules()
+        if not self.args.no_tie_modules:
+            pipe_model.tie_modules()
 
         if self.args.wall_clock_breakdown and mpu.get_data_parallel_rank() == 0 and mpu.get_model_parallel_rank() == 0:
             print(dist.get_rank(), pipe_model.stage_id, pipe_model)
@@ -354,11 +375,19 @@ class MerakTrainer(Trainer):
 
     def do_prediction(self):
         eval_dataloader = self.get_eval_dataloader()
-        dataloader_length = len(eval_dataloader)//self.args.gradient_accumulation_steps
-        eval_iterator = iter(eval_dataloader)
+
+        # keep training iterator
+        train_loader =self.pipe_model.data_iterator
+        # create eval iterator
+        self.pipe_model.set_dataiterator(eval_dataloader)
+        if self.args.eval_iters is not None:
+            eval_step = self.args.eval_iters
+        else:
+            eval_step = len(eval_dataloader)//self.args.gradient_accumulation_steps
+        # eval_iterator = iter(eval_dataloader)
         metrics = AccMetric()
-        for idx in range(dataloader_length):
-            loss, logits, labels = self.pipe_model.eval_batch(eval_iterator)
+        for idx in range(eval_step):
+            loss, logits, labels = self.pipe_model.eval_batch()
             metrics.update('eval_loss', loss.item())
             if self.pipe_model.is_last_stage() and self.args.return_logits:
                 step_metrics = self.compute_metrics(
@@ -368,6 +397,8 @@ class MerakTrainer(Trainer):
                 for key in step_metrics:
                     metrics.update(key, step_metrics[key])
             dist.barrier()
+        # Restore the training iterator
+        self.pipe_model.set_dataiterator(train_loader)
         return metrics.avg
 
 
@@ -428,9 +459,11 @@ class MerakTrainer(Trainer):
         # reset random seed according to epoch
         if self.iter_dataloader and isinstance(self.iter_dataloader, DataLoader) and hasattr(self.iter_dataloader.batch_sampler, 'set_epoch'):
             self.iter_dataloader.batch_sampler.set_epoch(epoch)
-        elif self.iter_dataloader and isinstance(self.iter_dataloader.dataset, IterableDatasetShard):
-            self.iter_dataloader.dataset.set_epoch(epoch)
-
+        elif self.iter_dataloader: 
+            if hasattr(self.iter_dataloader, 'dataset'):
+                if isinstance(self.iter_dataloader.dataset, IterableDatasetShard):
+                    self.iter_dataloader.dataset.set_epoch(epoch)
+        
         if epoch > 0:
             self.pipe_model.reset_dataiterator(self.iter_dataloader)
 
@@ -549,6 +582,18 @@ class MerakTrainer(Trainer):
             return loss
         return loss_fn
 
+    def get_vocab_loss_fn(self):
+        def vocab_loss_fn(outputs, labels):
+            if isinstance(outputs, tuple):
+                outputs = outputs[0]
+            if isinstance(labels, tuple):
+                labels = labels[0]
+            losses = mpu.vocab_parallel_cross_entropy(outputs, labels)
+            # loss mask??
+            loss = torch.sum(losses.view(-1))
+            return loss
+        return vocab_loss_fn
+
     def amp_config(self, deepspeed_config):
 
         if self.args.fp16:
@@ -564,17 +609,14 @@ class MerakTrainer(Trainer):
             deepspeed_config["fp16"] = fp16_var
         elif self.args.half_precision_backend != "auto":
             if self.args.half_precision_backend == "apex":
-                # apex or amp config
-                if self.args.fp16_opt_level in ["O2", "O3"]:
-                    warnings.warn("Merak is not surpport 'fp16_opt_level' to set 'O2' or 'O3' when using apex, so cast it to O1 ")
                 amp_var = {
                         "enabled": True,
-                        "opt_level": "O1",
+                        "opt_level": self.args.fp16_opt_level,
                         }
-            # elif self.args.half_precision_backend == "amp":
-            #     amp_var = {
-            #             "enabled": True
-            #             }
+            elif self.args.half_precision_backend == "amp":
+                amp_var = {
+                        "enabled": True
+                        }
             deepspeed_config["amp"] = amp_var
 
         return deepspeed_config
@@ -589,9 +631,55 @@ class MerakTrainer(Trainer):
 
         return iteration
 
-    def save_to_checkpoint(self):
-        kwargs = None
-        save_checkpoint(self.state.global_step, self.pipe_model, self.optimizer, self.lr_scheduler, self.args, **kwargs)
+    def save_to_checkpoint(self, best_model=None):
+        # kwargs = None
+        save_checkpoint(self.state.global_step, self.pipe_model, self.optimizer, self.lr_scheduler, best_model, self.args)
+
+    def _sorted_checkpoints(self, output_dir=None, checkpoint_prefix="ckpt"):
+        ordering_and_checkpoint_path = []
+
+        glob_checkpoints = [str(x) for x in Path(output_dir).glob("*_ckpt")]
+
+        for path in glob_checkpoints:
+            if not os.listdir(path):
+                print_rank_0(f"Deleting empty checkpoint dirctory [{path}]")
+                shutil.rmtree(path)
+            if "best_ckpt" in path:
+                continue
+            for x in Path(path).glob("iter_*"):
+                ordering_and_checkpoint_path.append(x)
+
+        checkpoints_sorted = sorted(ordering_and_checkpoint_path)
+
+        return checkpoints_sorted
+
+    def _rotate_checkpoints(self, output_dir=None):
+        if self.args.save_total_limit is None or self.args.save_total_limit <= 0:
+            return
+
+        # Check if we should delete older checkpoint(s)
+        checkpoints_sorted = self._sorted_checkpoints(output_dir=output_dir)
+        if len(checkpoints_sorted) <= self.args.save_total_limit:
+            return
+
+        # If save_total_limit=1 with load_best_model_at_end=True, we could end up deleting the last checkpoint, which
+        # we don't do to allow resuming.
+        save_total_limit = self.args.save_total_limit
+        if (
+            self.args.save_total_limit == 1
+        ):
+            save_total_limit = 2
+
+        number_of_checkpoints_to_delete = max(0, len(checkpoints_sorted) - save_total_limit)
+        checkpoints_to_be_deleted = checkpoints_sorted[:number_of_checkpoints_to_delete]
+
+        # Only rank 0 to delete files.
+        if dist.get_rank() == 0:
+            for checkpoint in checkpoints_to_be_deleted:
+                print_rank_0(f"Deleting older checkpoint [{checkpoint}] due to args.save_total_limit")
+                shutil.rmtree(checkpoint)
+        dist.barrier()
+
 
 
 # monkey patch for train function
