@@ -152,11 +152,7 @@ class DeepSpeedEngine(Module):
         self.training_dataloader = None
 
         # Configure optimizer and scheduler
-            if self.args.half_precision_backend == "amp":
-            if self.args.half_precision_backend == "amp":
-                # assert mpu.get_pipe_parallel_world_size() <= 1 and self.mp_world_size <= 1, "Currently not support model parallelism with native amp"
         if self.args.half_precision_backend == "amp":
-                # assert mpu.get_pipe_parallel_world_size() <= 1 and self.mp_world_size <= 1, "Currently not support model parallelism with native amp"
             self.scaler = GradScaler()
         self._configure_optimizer(optimizer, model_parameters)
         self.lr_scheduler = lr_scheduler
