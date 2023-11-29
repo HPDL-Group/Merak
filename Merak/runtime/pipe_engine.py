@@ -377,7 +377,7 @@ class PipelineEngine(DeepSpeedEngine):
         # TODO: should return precisely what loss returned and allow others to be queried?
         return self.agg_train_loss
 
-    def eval_batch(self, compute_loss=True, reduce_output='avg'):
+    def eval_batch(self, batch_fn=None, compute_loss=True, reduce_output='avg'):
         """Evaluate the pipeline on a batch of data from ``data_iter``. The
         engine will evaluate ``self.train_batch_size()`` total samples
         collectively across all workers.
@@ -407,6 +407,9 @@ class PipelineEngine(DeepSpeedEngine):
 
         self.module.eval()
         self.do_train = False
+
+        if batch_fn:
+            self.batch_fn = batch_fn
 
         eval_output = None
         if self.return_logits:
@@ -586,7 +589,7 @@ class PipelineEngine(DeepSpeedEngine):
 
     def _next_batch(self):
         batch = None
-        if self.data_iterator is not None:
+        if not self.args.text_generation and self.data_iterator is not None:
             if not isinstance(self.data_iterator, (_MultiProcessingDataLoaderIter, _SingleProcessDataLoaderIter)):
                 self.data_iterator = iter(self.data_iterator)
 
@@ -631,7 +634,8 @@ class PipelineEngine(DeepSpeedEngine):
             if self._compute_loss and self.loss_model is not None:
                 labels = self.pipe_buffers['labels'][buffer_id]
                 # print(outputs.shape, labels.shape)
-                self.loss = self.loss_model(outputs, labels)
+                if not self.args.text_generation:
+                    self.loss = self.loss_model(outputs, labels)
                 if self.return_logits and not self.do_train:
                     self.logits.append(outputs)
                     self.labels.append(labels)
@@ -736,13 +740,16 @@ class PipelineEngine(DeepSpeedEngine):
                 # 去掉last stage不需要的部分
                 batch = batch[load_idx:]
 
-            for x in batch:
-                assert torch.is_tensor(x)
-                x = x.to(self.device).detach()
-                loaded.append(x)
-            loaded = tuple(loaded)
+            if not self.args.text_generation:
+                for x in batch:
+                    assert torch.is_tensor(x)
+                    x = x.to(self.device).detach()
+                    loaded.append(x)
+                loaded = tuple(loaded)
 
-            self.pipe_buffers['labels'][buffer_id] = loaded
+                self.pipe_buffers['labels'][buffer_id] = loaded
+            else:
+                self.pipe_buffers['labels'][buffer_id] = None
 
 
         if self.wall_clock_breakdown():

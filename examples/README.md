@@ -36,4 +36,15 @@ python -m torch.distributed.launch --nproc_per_node=4  run_gpt.py \
                 --data_path /ssd/datasets/imagenet/pytorch
 ```
 
+User could enable zero optimization by set '--zero_optimization True', if the training fails with an out-of-memory (OOM) error.
 
+```bash
+python -m torch.distributed.launch --nproc_per_node=4  run_gpt.py \
+                --model-name gpt2 \
+                --zero_optimization True \
+                --data-files ./train_context.csv \
+                --output_dir ./output \
+                --per_device_train_batch_size 4 \
+                --gradient_accumulation_steps 4 \
+                --data_path /ssd/datasets/imagenet/pytorch
+```

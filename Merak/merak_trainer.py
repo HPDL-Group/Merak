@@ -1,7 +1,7 @@
 # coding=utf-8
 # Copyright (c) 2022, HPDL group, PDL lab, NUDT.  All rights reserved.
 #
-# Maintainer: Swli (lucasleesw9@gmail.com), TXacs (txacs1993@gmail.com)
+# Maintainer: Swli (lucasleesw9@gmail.com), TXacs (txacs1993@gmail.com), Yck(eyichenke@gmail.com)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -41,7 +41,7 @@ from .runtime.pipe_engine import PipelineEngine
 from .utils.merak_args import mergeargs, MerakArguments, manual_set_args
 from .utils.dataloader import MegatronPretrainingRandomSampler
 from .utils.logging import AccMetric, log_dist
-from .utils.checkpoint import save_checkpoint, load_checkpoint
+from .utils.checkpoint import save_checkpoint, load_checkpoint, load_peft_model_state_dict
 
 from .autoshard.convert import convert_to_sequential, hf_fx_compatibility
 
@@ -61,7 +61,7 @@ import shutil
 
 
 class MerakTrainer(Trainer):
-    def __init__(self, leaf_modules=(), loss_fn=torch.nn.CrossEntropyLoss(), **kwargs):
+    def __init__(self, add_model=(), leaf_modules=(), loss_fn=torch.nn.CrossEntropyLoss(), **kwargs):
         """
         Class of Merak's trainer was derived with transformers.Trainer (https://huggingface.co/docs/transformers/master/en/main_classes/trainer#trainer) for convenience.
         Merak trainer extends transformers.Trainer to 3D parallelism.
@@ -79,6 +79,8 @@ class MerakTrainer(Trainer):
 
         self.leaf_modules = leaf_modules
         self.loss_fn = loss_fn
+
+        self.add_model = add_model
 
         if 'args' not in kwargs:
             output_dir = "tmp_trainer"
@@ -220,7 +222,7 @@ class MerakTrainer(Trainer):
                 self.args.input_names=list(trace_batch.keys())
             del self.iter_dataloader
 
-        model, model_layers, input_to_shard_dic = convert_to_sequential(self.model, self.args, self.leaf_modules)
+        model, model_layers, input_to_shard_dic = convert_to_sequential(self.model, self.args, self.add_model, self.leaf_modules)
         self.model_name = self.model._get_name()
 
         del model
@@ -344,6 +346,7 @@ class MerakTrainer(Trainer):
                             }
 
         deepspeed_config = self.amp_config(deepspeed_config)
+        deepspeed_config = self.zero_config(deepspeed_config)
 
         self.pipe_model = PipelineEngine(args=self.args,
                                 model=pipe_model,
@@ -415,6 +418,8 @@ class MerakTrainer(Trainer):
 
 
     def get_train_dataloader(self):
+        if self.args.text_generation:
+            return range(self.args.per_device_train_batch_size * 100)
 
         assert self.train_dataset is not None, "Trainer: training requires a train_dataset."
 
@@ -621,10 +626,27 @@ class MerakTrainer(Trainer):
 
         return deepspeed_config
 
-    def load_from_checkpoint(self, resume_from_checkpoint):
+    def zero_config(self, deepspeed_config):
+
+        if self.args.zero_optimization:
+            zero_var = {
+                        "enabled": True,
+                        "zero_allow_untested_optimizer": self.args.zero_allow_untested_optimizer,
+                        "stage": self.args.zero_stage,
+                        "zero_allgather_partition_size": self.args.zero_allgather_bucket_size,
+                        "zero_reduce_bucket_size": self.args.zero_reduce_bucket_size,
+            }
+            deepspeed_config["zero"] = zero_var
+        return deepspeed_config
+
+    def load_from_checkpoint(self, resume_from_checkpoint, peft=False):
         if os.path.exists(resume_from_checkpoint):
-            iteration, state_dict = load_checkpoint(self.pipe_model, self.optimizer, self.lr_scheduler, self.args)
-            del state_dict
+            if peft:
+                load_results = load_peft_model_state_dict(self.pipe_model, self.args, self.peft_config)
+                return load_results
+            else:
+                iteration, state_dict, opt_state_dict = load_checkpoint(self.pipe_model, self.optimizer, self.lr_scheduler, self.args)
+            del state_dict, opt_state_dict
 
         else:
             raise ValueError("Cannot find checkpoint files")
@@ -632,8 +654,11 @@ class MerakTrainer(Trainer):
         return iteration
 
     def save_to_checkpoint(self, best_model=None):
-        # kwargs = None
-        save_checkpoint(self.state.global_step, self.pipe_model, self.optimizer, self.lr_scheduler, best_model, self.args)
+        kwargs = {"best_model": best_model,
+                  "args": self.args,
+                  "peft_config": self.peft_config
+                  }
+        save_checkpoint(self.state.global_step, self.pipe_model, self.optimizer, self.lr_scheduler, **kwargs)
 
     def _sorted_checkpoints(self, output_dir=None, checkpoint_prefix="ckpt"):
         ordering_and_checkpoint_path = []

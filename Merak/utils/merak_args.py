@@ -18,6 +18,7 @@
 import os
 import sys
 import time
+import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 import torch
@@ -116,6 +117,11 @@ class MerakArguments(TrainingArguments):
     -   shard_count (int, Optional, defaults to None) -- Number of shards that model needs to be break, will be training_args.num_layers*2 if not set.
     -   prescale_gradients (bool, defaults to False) -- Whether to enable gradient prescaling.
     -   gradient_predivide_factor (float, defaults to 1.0) -- Gradient predivide factor in gradient prescaling.
+    -   zero_optimization (bool, defaults to False) -- Whether to enable zero optimization.
+    -   zero_allow_untested_optimizer (bool, defaults to False) -- Whether to allow wrap untested optimizer. The untested optimizer does not guarantee the correctness of training.
+    -   zero_stage (float, defaults to 1) -- Stage of zero optimization.
+    -   zero_allgather_bucket_size (float, defaults to 500000000) -- The bucket size per communication in optimzier step.
+    -   zero_reduce_bucket_size (float, defaults to 500000000) -- The bucket size per communication in gradients reduce.
     -   save (bool, defaults to False) -- Whether to save checkpoint.
     -   finetune (bool, defaults to False) -- Load model for finetuning. Do not load optimizer or rng state from checkpoint and set iteration to 0. Assumed when loading a release checkpoint.
     -   no_save_rng (bool, defaults to False) -- Do not save current rng state.
@@ -146,6 +152,10 @@ class MerakArguments(TrainingArguments):
     -   no_tie_modules (bool, defaults to False) -- Whether to set tie modules.
     -   save_total_limit (int, defaults to -1) -- Limit the max numbers of checkpoints.
     -   eval_iters (int, defaults to None) -- Number of iterations to run for evaluationvalidation/test for.
+    -   text_generation (bool, Optional, defaults to False) -- Whether to do text generate.
+    -   out_seq_length (int, Optional, defaults to 1024) -- The maximum sequence length that this model's output. Defaults to 1024.
+    -   temperature (float, Optional, defaults to 0.9) -- Sampling temperature.
+    -   lora_config (str, Optional, defaults to None) -- Set lora config path.
     """
 
     train_schedule: str = field(
@@ -216,7 +226,27 @@ class MerakArguments(TrainingArguments):
         default=False,
         metadata={"help": "Whether to return logits and labels in evaluation. Defaults to False"},
     )
-
+    #zero arguments
+    zero_optimization: bool = field(
+        default=False,
+        metadata={"help": "Whether to use zero optimization. Defaults to False"},
+    )
+    zero_allow_untested_optimizer: bool = field(
+        default=False,
+        metadata={"help": "Whether to allow zero to wrap untested optimizer."}
+    )
+    zero_stage: float = field(
+        default=1.0,
+        metadata={"help": "Set the stage of zero optimizer. Defaults to 1. Only support zero stage 1 currently."},
+    )
+    zero_allgather_bucket_size: float = field(
+        default=500000000,
+        metadata={"help":"Set the all gather partition size for zero stage 1 optimization."}
+    )
+    zero_reduce_bucket_size: float = field(
+        default=500000000,
+        metadata={"help":"Set the reduce bucket size(max_elems_per_comm) for zero stage 1 optimization. "}
+    )
     # checkpoint arguments
     save: bool = field(
         default=False,
@@ -322,6 +352,31 @@ class MerakArguments(TrainingArguments):
         default=None,
         metadata={"help": 'Number of iterations to run for evaluationvalidation/test for.'}
     )
+
+    # text generation
+    text_generation: bool = field(
+        default=False,
+        metadata={"help": "Whether to do text generate"}
+    )
+    out_seq_length: int = field(
+        default=1024,
+        metadata={"help": "The maximum sequence length that this model's output. Defaults to 1024."}
+    )
+    temperature: float = field(
+        default=0.9,
+        metadata={"help": "Sampling temperature"}
+    )
+
+    # peft
+    lora_config: str = field(
+        default=None,
+        metadata={"help": "Set lora config path"}
+    )
+
+    def get_lora_config(self):
+        with open(self.lora_config, "r") as f:
+            lora_kwargs = json.load(f)
+        return lora_kwargs
 
 
     @cached_property

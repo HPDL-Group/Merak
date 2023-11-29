@@ -39,6 +39,8 @@ import sys
 import time
 from . import mpu, print_rank_0
 
+from .modules.lora.config import TaskType, LoraConfig, _prepare_lora_config
+
 # Name of the files used for checkpointing
 TRAINING_ARGS_NAME = "training_args.bin"
 TRAINER_STATE_NAME = "trainer_state.json"
@@ -201,6 +203,25 @@ def train(
         else:
             self.state.global_step = iteration
             self.pipe_model.global_steps = iteration
+
+        if self.args.lora_config:
+            assert self.mp == 1, "Don't support tensor parallelism in peft"
+            peft_config = LoraConfig(**self.args.get_lora_config())
+            peft_config = _prepare_lora_config(peft_config, self.model.config.to_dict())
+            self.pipe_model.loramodel(peft_config)
+            self.peft_config = peft_config
+
+            # reset optimizer
+            self.create_optimizer()
+            self.pipe_model._configure_optimizer(self.optimizer, None)
+
+            if resume_from_checkpoint and os.path.isdir(resume_from_checkpoint):
+                load_results = self.load_from_checkpoint(resume_from_checkpoint, peft=True)
+
+            self.pipe_model.print_trainable_parameters()
+        else:
+            self.peft_config = None
+
 
     # Train!
     if self.iter_dataloader is not None and torch.distributed.get_rank()==0:

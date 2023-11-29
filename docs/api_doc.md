@@ -49,6 +49,11 @@ Extra parameters:
 -   shard_count (int, Optional, defaults to None) -- Number of shards that model needs to be break, will be training_args.num_layers*2 if not set.
 -   prescale_gradients (bool, defaults to False) -- Whether to enable gradient prescaling.
 -   gradient_predivide_factor (float, defaults to 1.0) -- Gradient predivide factor in gradient prescaling.
+-   zero_optimization (bool, defaults to False) -- Whether to enable zero optimization.
+-   zero_allow_untested_optimizer (bool, defaults to False) -- Whether to allow wrap untested optimizer. The untested optimizer does not guarantee the correctness of training.
+-   zero_stage (float, defaults to 1) -- Stage of zero optimization.
+-   zero_allgather_bucket_size (float, defaults to 500000000) -- The bucket size per communication in optimzier step.
+-   zero_reduce_bucket_size (float, defaults to 500000000) -- The bucket size per communication in gradients reduce.
 -   save (bool, defaults to False) -- Whether to save checkpoint.
 -   finetune (bool, defaults to False) -- Load model for finetuning. Do not load optimizer or rng state from checkpoint and set iteration to 0. Assumed when loading a release checkpoint.
 -   no_save_rng (bool, defaults to False) -- Do not save current rng state.
@@ -79,7 +84,10 @@ Extra parameters:
 -   no_tie_modules (bool, defaults to False) -- Whether to set tie modules.
 -   save_total_limit (int, defaults to -1) -- Limit the max numbers of checkpoints.
 -   eval_iters (int, defaults to None) -- Number of iterations to run for evaluationvalidation/test for.
-
+-   text_generation (bool, Optional, defaults to False) -- Whether to do text generate.
+-   out_seq_length (int, Optional, defaults to 1024) -- The maximum sequence length that this model's output. Defaults to 1024.
+-   temperature (float, Optional, defaults to 0.9) -- Sampling temperature.
+-   lora_config (str, Optional, defaults to None) -- Set lora config path.
 
 
 ### class *Merak.MerakTrainer*

@@ -83,8 +83,9 @@ def hf_fx_compatibility(model):
     
 default_leaf_modules = (LinearProxy, Conv1DProxy, EmbeddingProxy, PipedGPT2Block)
 
-def convert_to_sequential(model, args, extra_leaf_modules=(), trace_batch=None):
+def convert_to_sequential(model, args, add_model=(), extra_leaf_modules=(), trace_batch=None):
     added_model = tuple(_generate_supported_model_classes('vit'))
+    added_model = tuple(added_model + add_model)
     transformers_fx_models = tuple(_SUPPORTED_MODELS+_SUPPORTED_MODELS_FOR_DYNAMIC_AXES+added_model)
     # print_rank_0(transformers_fx_models)
     if not args.fp16 and args.half_precision_backend != "apex":

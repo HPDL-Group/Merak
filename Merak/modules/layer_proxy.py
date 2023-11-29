@@ -30,6 +30,7 @@ from torch.nn.parameter import Parameter
 from torch.nn import functional as F
 from torch.nn import init
 import math
+from transformers.modeling_utils import Conv1D
 
 SHOULD_PRINT_CONV = True
 SHOULD_PRINT_LINEAR = True
@@ -143,9 +144,9 @@ class Conv1DProxy(nn.Module):
     def build(self, init_args, fp16):
         if self.mp_attr == ' ':
             if fp16:
-                return transformers.modeling_utils.Conv1D(*self.module_args).cuda().half()
+                return Conv1D(*self.module_args).cuda().half()
             else:
-                return transformers.modeling_utils.Conv1D(*self.module_args).cuda()
+                return Conv1D(*self.module_args).cuda()
         if self.mp_attr.startswith('row'):
             init_method = scaled_init_method_normal(*init_args)
             if self.mp_attr == 'row_mlp':

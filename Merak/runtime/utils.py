@@ -11,7 +11,10 @@ import psutil
 import gc
 
 import torch
-from torch._six import inf
+try:
+    from torch._six import inf
+except ImportError:
+    from torch import inf
 import torch.distributed as dist
 from torch.autograd.variable import Variable
 

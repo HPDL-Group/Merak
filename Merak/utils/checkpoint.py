@@ -1,7 +1,7 @@
 # coding=utf-8
 # Copyright (c) 2022, HPDL group, PDL lab, NUDT.  All rights reserved.
 #
-# Maintainer: TXacs (txacs1993@gmail.com)
+# Maintainer: TXacs (txacs1993@gmail.com), Yck (eyichenke@gmail.com)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -28,6 +28,8 @@ from .. import mpu, print_rank_0
 from ..runtime.checkpointing import get_cuda_rng_tracker
 import torch.distributed as dist
 import datetime
+from ..modules.lora.config import PeftType
+from collections import OrderedDict
 
 _CHECKPOINT_VERSION = None
 
@@ -42,8 +44,9 @@ def get_checkpoint_version():
     global _CHECKPOINT_VERSION
     return _CHECKPOINT_VERSION
 
-def get_checkpoint_name(checkpoints_path, iteration,
-                        release=False, complete=False, best=None):
+
+def get_checkpoint_name(checkpoints_path, iteration, args,
+                        release=False, complete=False, best=None, peft=False):
     """A unified checkpoint name."""
     if release:
         directory = 'release'
@@ -51,26 +54,79 @@ def get_checkpoint_name(checkpoints_path, iteration,
         directory = 'best_model'
     else:
         directory = 'iter_{:07d}'.format(iteration)
+    if peft:
+        peft_id = 'lora_'
+    else:
+        peft_id = ''
     # Use both the tensor and pipeline MP rank.
     if mpu.get_model_parallel_world_size() == 1 and mpu.get_pipe_parallel_world_size() == 1:
-        return os.path.join(checkpoints_path,
+        model_ckpt_name = os.path.join(checkpoints_path,
                             'iter_{:07d}_all_dp'.format(
                                 iteration,
                             ),
-                            'model_optim.pt')
+                            f'{peft_id}model_optim.pt')
+        opt_ckpt_name = os.path.join(checkpoints_path,
+                                'iter_{:07d}_all_dp'.format(
+                                    iteration,
+                                ),  'zero_dp_rank_{}'.format(mpu.get_data_parallel_rank())\
+                                    +'_opt_states.pt') if args.zero_optimization else None
 
     elif mpu.get_pipe_parallel_world_size() == 1 and mpu.get_model_parallel_world_size() != 1:
-        return os.path.join(checkpoints_path, directory,
+        model_ckpt_name = os.path.join(checkpoints_path, directory,
                             'mp_rank_{:02d}'.format(
                                 mpu.get_model_parallel_rank()),
-                            'partial_model_optim.pt')
+                            f'{peft_id}partial_model_optim.pt')
+        opt_ckpt_name = os.path.join(checkpoints_path, directory,
+                                    'zero_dp_rank_{}'.format(mpu.get_data_parallel_rank())\
+                                    +'_mp_rank_{}'.format(mpu.get_model_parallel_rank())\
+                                    +'_opt_states.pt') if args.zero_optimization else None
 
     else:
-        return os.path.join(checkpoints_path, directory,
+        model_ckpt_name = os.path.join(checkpoints_path, directory,
                             'mp_rank_{:02d}_pp_rank_{:03d}'.format(
                                 mpu.get_model_parallel_rank(),
                                 mpu.get_pipe_parallel_rank()),
-                            'partial_model_optim.pt')
+                            f'{peft_id}partial_model_optim.pt')
+        opt_ckpt_name = os.path.join(checkpoints_path, directory,
+                                     'zero_dp_rank_{}'.format(mpu.get_data_parallel_rank())\
+                                    +'_mp_rank_{}'.format(mpu.get_model_parallel_rank())\
+                                    +'_pp_rank_{}'.format(mpu.get_pipe_parallel_rank())\
+                                    +'_opt_states.pt') if args.zero_optimization else None
+
+    return model_ckpt_name, opt_ckpt_name
+
+def get_zero_param_shapes(optimizer, model):
+    """Returns a dict of name to shape mapping, only for the flattened fp32 weights saved by the
+    optimizer. the names are exactly as in state_dict. The order is absolutely important, since
+    the saved data is just flattened data with no identifiers and requires reconstruction in the
+    same order it was saved.
+
+    We can't rely on self.module.named_parameters() to get the saved tensors, as some params
+    will be missing and others unsaved and then it'd be impossible to reconstruct state_dict
+    from the flattened weights.
+    """
+    param_names = {param: name for name, param in model.named_parameters()}
+    param_group_shapes = []
+    cnt = 0
+    numel = 0
+
+    fp16_groups =  optimizer.fp16_groups
+
+    for fp16_group in fp16_groups:
+        param_shapes = OrderedDict()
+        for param in fp16_group:
+            cnt += 1
+            numel += param.numel()
+            shape = param.shape
+            if param not in param_names:
+                raise ValueError(f"failed to find optimizer param in named params")
+            name = param_names[param]
+            param_shapes[name] = shape
+
+        param_group_shapes.append(param_shapes)
+    # if self.global_rank == 0: print(f"Total saved {numel} numels in {cnt} params")
+
+    return param_group_shapes
 
 def ensure_directory_exists(filename):
     """Build filename's path if it does not already exists."""
@@ -178,6 +234,7 @@ def save_checkpoint(iteration, model, optimizer, lr_scheduler, best_model, args,
 
     # Only rank zero of the data parallel writes to the disk.
     model = unwrap_model(model)
+    checkpoint_name, zero_ckpt_name = get_checkpoint_name(save_path, iteration, args, best=best_model)
 
     if not torch.distributed.is_initialized() or mpu.get_data_parallel_rank() == 0:
 
@@ -192,11 +249,11 @@ def save_checkpoint(iteration, model, optimizer, lr_scheduler, best_model, args,
                 state_dict[k] = v
 
         # Optimizer stuff.
-        if not args.no_save_optim:
+        if not args.zero_optimization and not args.no_save_optim:
             if optimizer is not None:
                 state_dict['optimizer'] = optimizer.state_dict()
-            if lr_scheduler is not None:
-                state_dict['lr_scheduler'] = lr_scheduler.state_dict()
+        if lr_scheduler is not None:
+            state_dict['lr_scheduler'] = lr_scheduler.state_dict()
 
         # RNG states.
         if not args.no_save_rng:
@@ -207,18 +264,28 @@ def save_checkpoint(iteration, model, optimizer, lr_scheduler, best_model, args,
             state_dict['rng_tracker_states'] \
                 = get_cuda_rng_tracker().get_states()
 
-        # save a complete model
-        # comp_model = {}
-        # print(state_dict['model'])
-        # comp_model['model'] = dist.reduce(state_dict['model'], dst=0)
-        # check_name = get_checkpoint_name(args.save, iteration, complete=True)
-        # ensure_directory_exists(check_name)
-        # torch.save(comp_model, check_name, _use_new_zipfile_serialization=False)
-
         # Save.
-        checkpoint_name = get_checkpoint_name(save_path, iteration, best=best_model)
+        if args.lora_config is not None and kwargs["peft_config"] is not None:
+            peft = True
+            peft_state_dict = get_peft_model_state_dict(model, kwargs["peft_config"])
+        else:
+            peft = False
+        checkpoint_name = get_checkpoint_name(save_path, iteration, best=best_model, peft=peft)
         ensure_directory_exists(checkpoint_name)
-        torch.save(state_dict, checkpoint_name, _use_new_zipfile_serialization=False)
+        torch.save(state_dict if not peft else peft_state_dict, checkpoint_name, _use_new_zipfile_serialization=False)
+
+    if args.zero_optimization:
+        try:
+            ensure_directory_exists(zero_ckpt_name)
+        except:
+                print_rank_0(f"Failed creating zero checkpoint to {save_path}")
+        dist.barrier()
+            # Save zero checkpoint
+        zero_sd = dict(optimizer_state_dict=optimizer.state_dict(),
+                    param_shapes=get_zero_param_shapes(optimizer, model))
+        torch.save(zero_sd, zero_ckpt_name)
+        print_rank_0('zero checkpoint saved {}'.format(zero_ckpt_name))
+
 
     # Wait so everyone is done (necessary)
     if torch.distributed.is_initialized():
@@ -263,18 +330,32 @@ def load_checkpoint(model, optimizer, lr_scheduler, args, load_arg='load', stric
     # mark it as a release checkpoint.
     iteration, release = read_metadata(tracker_filename)
 
-    # Checkpoint.
-    checkpoint_name = get_checkpoint_name(load_dir, iteration, release)
+    checkpoint_name, zero_ckpt_name= get_checkpoint_name(load_dir, iteration, args, release)
+    if args.zero_optimization:
+        opt_state_dict = torch.load(zero_ckpt_name, map_location='cpu')
+
     print_rank_0(f' loading checkpoint from {args.resume_from_checkpoint} at iteration {iteration}')
 
     # Load the checkpoint.
-    print(checkpoint_name)
+    if mpu.get_data_parallel_rank() == 0:
+        print(checkpoint_name)
     try:
         state_dict = torch.load(checkpoint_name, map_location='cpu')
     except BaseException as e:
         print_rank_0('could not load the checkpoint')
         print_rank_0(e)
         sys.exit()
+
+    # adapt model by using fake data 
+    if "module.1._tensor_constant0" in model.state_dict().keys():
+        new_state_dict = {}
+        for n, p in state_dict['model'].items():
+            if n == "module.0.transformer.wte.weight":
+                new_state_dict[n] = p
+                new_state_dict["module.1._tensor_constant0"] = model.state_dict()["module.1._tensor_constant0"]
+            else:
+                new_state_dict[n] = p
+        state_dict['model'] = new_state_dict
 
     # set checkpoint version
     set_checkpoint_version(state_dict.get('checkpoint_version', 0))
@@ -325,7 +406,13 @@ def load_checkpoint(model, optimizer, lr_scheduler, args, load_arg='load', stric
     if not release and not args.finetune and not args.no_load_optim:
         try:
             if optimizer is not None:
-                if args.fp16:
+                if args.zero_optimization:
+                    optimizer.load_state_dict(
+                        opt_state_dict['optimizer_state_dict'],
+                        load_optimizer_states=True)
+                    print(f'  successfully loaded zero optimizer checkpoint from {zero_ckpt_name} '
+                 f'at iteration {iteration}')
+                elif args.fp16:
                     optimizer.load_state_dict(
                         state_dict['optimizer'],
                         load_optimizer_states=True)
@@ -337,7 +424,7 @@ def load_checkpoint(model, optimizer, lr_scheduler, args, load_arg='load', stric
             print_rank_0('Unable to load optimizer from checkpoint {}. '
                          'Specify --no-load-optim or --finetune to prevent '
                          'attempting to load the optimizer state, '
-                         'exiting ...'.format(checkpoint_name))
+                         'exiting ...'.format(zero_ckpt_name if args.zero_optimization else checkpoint_name))
             sys.exit()
 
     # rng states.
@@ -366,7 +453,7 @@ def load_checkpoint(model, optimizer, lr_scheduler, args, load_arg='load', stric
     print_rank_0(f'  successfully loaded checkpoint from {args.resume_from_checkpoint} '
                  f'at iteration {iteration}')
 
-    return iteration, state_dict
+    return iteration, state_dict, opt_state_dict if args.zero_optimization else None
 
 
 def unwrap_model(model):
@@ -380,3 +467,99 @@ def unwrap_model(model):
     if not return_list:
         return unwrapped_model[0]
     return unwrapped_model
+
+# peft
+def load_peft_model_state_dict(model, args, peft_config):
+    load_dir = args.resume_from_checkpoint #getattr(args, load_arg)
+    # Read the tracker file and set the iteration.
+    tracker_filename = get_checkpoint_tracker_filename(load_dir)
+    iteration, release = read_metadata(tracker_filename)
+
+    filename = get_checkpoint_name(load_dir, iteration, release, peft=True)
+    if not os.path.isfile(filename):
+        if mpu.get_data_parallel_rank() == 0:
+            print(f'WARNING ! The path {args.resume_from_checkpoint} has no lora model files {filename}')
+            return
+    if mpu.get_data_parallel_rank() == 0:
+        print(filename)
+    print_rank_0(f' loading peft checkpoint from {args.resume_from_checkpoint} at iteration {iteration}')
+
+
+    peft_state_dict = torch.load(filename, map_location=torch.device("cpu"))
+    load_results = set_peft_model_state_dict(model, peft_state_dict, peft_config)
+    return load_results
+
+
+def get_peft_model_state_dict(model, peft_config, state_dict=None):
+    """
+    Get the state dict of the Peft model.
+
+    Args:
+        model ([`PeftModel`]): The Peft model. When using torch.nn.DistributedDataParallel, DeepSpeed or FSDP,
+        the model should be the underlying model/unwrapped model (i.e. model.module).
+        state_dict (`dict`, *optional*, defaults to `None`):
+            The state dict of the model. If not provided, the state dict of the model
+        will be used.
+    """
+    if state_dict is None:
+        state_dict = model.state_dict()
+    if peft_config.peft_type == PeftType.LORA:
+        # to_return = lora_state_dict(model, bias=model.peft_config.bias)
+        # adapted from `https://github.com/microsoft/LoRA/blob/main/loralib/utils.py`
+        # to directly with the state dict which is necessary when using DeepSpeed or FSDP
+        bias = peft_config.bias
+        if bias == "none":
+            to_return = {k: state_dict[k] for k in state_dict if "lora_" in k}
+        elif bias == "all":
+            to_return = {k: state_dict[k] for k in state_dict if "lora_" in k or "bias" in k}
+        elif bias == "lora_only":
+            to_return = {}
+            for k in state_dict:
+                if "lora_" in k:
+                    to_return[k] = state_dict[k]
+                    bias_name = k.split("lora_")[0] + "bias"
+                    if bias_name in state_dict:
+                        to_return[bias_name] = state_dict[bias_name]
+        else:
+            raise NotImplementedError
+    else:
+        raise NotImplementedError
+
+    return to_return
+
+def set_peft_model_state_dict(model, peft_model_state_dict, peft_config, adapter_name=""):
+    """
+    Set the state dict of the Peft model.
+
+    Args:
+        model ([`PeftModel`]): The Peft model.
+        peft_model_state_dict (`dict`): The state dict of the Peft model.
+    """
+    config = peft_config
+    state_dict = peft_model_state_dict
+
+    if config.peft_type in (PeftType.LORA,):
+        peft_model_state_dict = {}
+        parameter_prefix = {
+            PeftType.LORA: "lora_",
+        }[config.peft_type]
+        for k, v in state_dict.items():
+            if parameter_prefix in k:
+                suffix = k.split(parameter_prefix)[1]
+                if "." in suffix:
+                    suffix_to_replace = ".".join(suffix.split(".")[1:])
+                    if adapter_name:
+                        k = k.replace(suffix_to_replace, f"{adapter_name}.{suffix_to_replace}")
+                    else:
+                        k = k.replace(suffix_to_replace, f"{suffix_to_replace}")
+                else:
+                    k = f"{k}.{adapter_name}" if adapter_name else f"{k}"
+                peft_model_state_dict[k] = v
+            else:
+                peft_model_state_dict[k] = v
+    else:
+        raise NotImplementedError
+
+    load_result = model.load_state_dict(peft_model_state_dict, strict=False)
+
+    return load_result

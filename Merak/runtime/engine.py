@@ -19,13 +19,15 @@ from tensorboardX import SummaryWriter
 
 from .. import mpu
 from .utils import see_memory_usage, clip_grad_norm_
-from .config import DeepSpeedConfig
+from .config import DeepSpeedConfig, ZERO_SUPPORTED_OPTIMIZERS
 from ..utils import logger, log_dist
 from ..utils.timer import ThroughputTimer, SynchronizedWallClockTimer
 from ..modules.module import PipelineModule
+from ..modules.lora.utils import mark_only_lora_as_trainable, _find_and_replace
 from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
 
 from ..utils.fp16_optimizer import FP16_Optimizer
+from ..utils.zero1_optimizer import FP16_DeepSpeedZeroOptimizer_Stage1
 
 try:
     import apex
@@ -150,15 +152,15 @@ class DeepSpeedEngine(Module):
         self.training_dataloader = None
 
         # Configure optimizer and scheduler
-        if self.amp_enabled() or self.fp16_enabled():
+            if self.args.half_precision_backend == "amp":
             if self.args.half_precision_backend == "amp":
                 # assert mpu.get_pipe_parallel_world_size() <= 1 and self.mp_world_size <= 1, "Currently not support model parallelism with native amp"
-                self.scaler = GradScaler()
-            self._configure_optimizer(optimizer, model_parameters)
-            self.lr_scheduler = lr_scheduler
-        else:
-            self.optimizer = optimizer
-            self.lr_scheduler = lr_scheduler
+        if self.args.half_precision_backend == "amp":
+                # assert mpu.get_pipe_parallel_world_size() <= 1 and self.mp_world_size <= 1, "Currently not support model parallelism with native amp"
+            self.scaler = GradScaler()
+        self._configure_optimizer(optimizer, model_parameters)
+        self.lr_scheduler = lr_scheduler
+
 
         if self.global_rank == 0:
             self._config.print('DeepSpeedEngine configuration')
@@ -261,6 +263,28 @@ class DeepSpeedEngine(Module):
     def loss_scale(self):
         return self._config.loss_scale
 
+    def fp16_master_weights_and_gradients(self):
+        return True if self.fp16_enabled() else False
+
+    def zero_enabled(self):
+        return self.args.zero_optimization
+
+    def is_zero_supported_optimizer(self, optimizer):
+        if dist.get_rank() == 0:
+            logger.info(
+                f'Checking ZeRO support for optimizer={optimizer.__class__.__name__} type={type(optimizer)}'
+            )
+        return type(optimizer) in ZERO_SUPPORTED_OPTIMIZERS
+
+    def zero_allow_untested_optimizer(self):
+        return self.args.zero_allow_untested_optimizer
+
+    def zero_allgather_bucket_size(self):
+        return self.args.zero_allgather_bucket_size
+
+    def zero_reduce_bucket_size(self):
+        return self.args.zero_reduce_bucket_size
+
 
     def _set_distributed_vars(self):
         if self.local_rank >= 0:
@@ -315,6 +339,26 @@ class DeepSpeedEngine(Module):
 
             assert os.path.isfile(args.deepspeed_config), \
                 'DeepSpeed configuration file: {} is not an existing file'.format(args.deepspeed_config)
+
+    def print_trainable_parameters(self):
+        """
+        Prints the number of trainable parameters in the model.
+        """
+        trainable_params = 0
+        all_param = 0
+        for _, param in self.named_parameters():
+            all_param += param.numel()
+            if param.requires_grad:
+                trainable_params += param.numel()
+        if mpu.get_data_parallel_rank() == 0 and mpu.get_model_parallel_rank() == 0:
+            print(
+                f"stage: {mpu.get_pipe_parallel_rank()} || trainable params: {trainable_params} \
+                  || all params: {all_param} || trainable%: {100 * trainable_params / all_param}"
+            )
+
+    def loramodel(self, config):
+        _find_and_replace(self, config)
+        mark_only_lora_as_trainable(self, config.bias)
 
     def _broadcast_model(self):
 
@@ -415,6 +459,12 @@ class DeepSpeedEngine(Module):
             )
             self._broadcast_model()
             # TODO: maybe need to broadcast experts differently?
+        elif self.zero_enabled():
+            if not self.is_zero_supported_optimizer(basic_optimizer):
+                assert (
+                    self.zero_allow_untested_optimizer()
+                ), 'You are using an untested ZeRO Optimizer. Please set <"zero_allow_untested_optimizer": true> in the merak arguments to use it.'
+            self.optimizer = self._configure_zero_optimizer(basic_optimizer)
         elif self.fp16_enabled():
             self.optimizer = self._configure_fp16_optimizer(basic_optimizer) 
         else:
@@ -423,6 +473,25 @@ class DeepSpeedEngine(Module):
                     ranks=[0])
 
         self.quantizer = None
+
+
+    def _configure_zero_optimizer(self, optimizer):
+
+        optimizer = FP16_DeepSpeedZeroOptimizer_Stage1(
+                optimizer,
+                static_loss_scale=self.loss_scale(),
+                dynamic_loss_scale=self.dynamic_loss_scale(),
+                dynamic_loss_args=self.dynamic_loss_scale_args(),
+                clip_grad=self.gradient_clipping(),
+                allgather_size=self.zero_allgather_bucket_size(),
+                max_elements_per_comm=self.zero_reduce_bucket_size(),
+                dp_process_group=self.data_parallel_group,
+                mpu=self.mpu,
+                postscale_gradients=self.postscale_gradients(),
+                gradient_predivide_factor=self.gradient_predivide_factor(),
+                communication_data_type=self.communication_data_type()
+            )
+        return optimizer
 
     def _configure_fp16_optimizer(self, optimizer):
         dynamic_loss_args = self.dynamic_loss_scale_args()
@@ -513,7 +582,7 @@ class DeepSpeedEngine(Module):
         """
 
         if (not self.fp16_enabled()
-                and not self.amp_enabled()):
+                and not self.amp_enabled() and not self.zero_enabled()):
             self.zero_grad()
         else:
             self.optimizer.zero_grad()
@@ -550,9 +619,14 @@ class DeepSpeedEngine(Module):
         return loss
 
     def allreduce_gradients(self, bucket_size=MEMORY_OPT_ALLREDUCE_SIZE):
- 
+        # Pass (PP) gas boundary flag to optimizer (required for zero)
+        # self.optimizer.is_gradient_accumulation_boundary = self.is_gradient_accumulation_boundary(
+        # )
         if self.is_gradient_accumulation_boundary():
-            self.buffered_allreduce_fallback(elements_per_buffer=bucket_size)
+            if self.zero_enabled():
+                self.optimizer.reduce_gradients()
+            else:
+                self.buffered_allreduce_fallback(elements_per_buffer=bucket_size)
 
     def backward(self, loss, allreduce_gradients=True, release_loss=False):
         r"""Execute backward pass on the loss
@@ -595,7 +669,9 @@ class DeepSpeedEngine(Module):
             self.timers('backward_inner_microstep').start()
             self.timers('backward_inner').start()
 
-        if self.amp_enabled() and self.args.half_precision_backend == "apex":
+        if self.zero_enabled():
+            self.optimizer.backward(loss)
+        elif self.amp_enabled() and self.args.half_precision_backend == "apex":
             # AMP requires delaying unscale when inside gradient accumulation boundaries
             # https://nvidia.github.io/apex/advanced.html#gradient-accumulation-across-iterations
             delay_unscale = not self._is_gradient_accumulation_boundary()
@@ -666,7 +742,7 @@ class DeepSpeedEngine(Module):
 
     def _take_model_step(self, lr_kwargs, block_eigenvalue={}):
         if self.gradient_clipping() > 0.0:
-            if not (self.fp16_enabled() or self.amp_enabled()):
+            if not (self.fp16_enabled() or self.amp_enabled() or self.zero_enabled()):
                 self.clip_fp32_gradients()
             elif self.amp_enabled() and self.args.half_precision_backend == "apex":
                 # AMP's recommended way of doing clipping

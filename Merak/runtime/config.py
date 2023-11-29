@@ -240,6 +240,22 @@ AMP = "amp"
 AMP_ENABLED = "enabled"
 AMP_ENABLED_DEFAULT = False
 
+#########################################
+# Zero support
+#########################################
+# ZeRO optimization. By default, this optimization is not enabled.
+# Users have to configure the desired optimization (0 means disabled) in merak args.
+
+ZERO_SUPPORTED_OPTIMIZERS = [
+    torch.optim.Adam,
+    torch.optim.AdamW,
+    torch.optim.SGD,
+    torch.optim.ASGD,
+    torch.optim.Adadelta,
+    torch.optim.Adamax,
+
+]
+
 class DeepSpeedConfigError(Exception):
     pass
 
