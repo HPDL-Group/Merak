@@ -16,12 +16,14 @@
 # limitations under the License.
 
 # The code here are adapted from https://github.com/huggingface/peft/blob/v0.0.2/src/peft/tuners/lora.py
+# The code here are adapted from https://github.com/huggingface/peft/blob/v0.6.0/src/peft/tuners/lora.py
 
 import warnings
 
 import torch
 import torch.nn as nn
-from .layer import Linear, LoraLayer, MergedLinear
+from .layer import Linear, LoraLayer, Embedding, Conv2d
+from transformers.modeling_utils import Conv1D
 
 
 def _get_submodules(model, key):
@@ -30,48 +32,101 @@ def _get_submodules(model, key):
     target = model.get_submodule(key)
     return parent, target, target_name
 
-def _replace_module(parent_module, child_name, new_module, old_module):
-    setattr(parent_module, child_name, new_module)
-    new_module.weight = old_module.weight
-    if old_module.bias is not None:
-        new_module.bias = old_module.bias
+def _replace_module(parent, child_name, new_module, child):
+        setattr(parent, child_name, new_module)
+        # It's not necessary to set requires_grad here, as that is handled by
+        # _mark_only_adapters_as_trainable
 
-def _find_and_replace(model, config):
+        # child layer wraps the original module, unpack it
+        if hasattr(child, "base_layer"):
+            child = child.base_layer
+        elif hasattr(child, "quant_linear_module"):
+            child = child.quant_linear_module
+
+        # TODO: layers with base_layer don't need the weight to be copied, as they have a reference already
+        if not hasattr(new_module, "base_layer"):
+            new_module.weight = child.weight
+            if hasattr(child, "bias"):
+                new_module.bias = child.bias
+
+        if getattr(child, "state", None) is not None:
+            if hasattr(new_module, "base_layer"):
+                new_module.base_layer.state = child.state
+            else:
+                new_module.state = child.state
+            new_module.to(child.weight.device)
+
+        # dispatch to correct device
+        for name, module in new_module.named_modules():
+            if "lora_" in name:
+                module.to(child.weight.device)
+            if "ranknum" in name:
+                module.to(child.weight.device)
+
+def _find_and_replace(model, adapter_name, config):
+
     kwargs = {
         "r": config.r,
         "lora_alpha": config.lora_alpha,
         "lora_dropout": config.lora_dropout,
         "fan_in_fan_out": config.fan_in_fan_out,
-        "merge_weights": config.merge_weights,
     }
     key_list = [key for key, _ in model.named_modules()]
     for key in key_list:
         if any(key.endswith(target_key) for target_key in config.target_modules):
             parent, target, target_name = _get_submodules(model, key)
             bias = target.bias is not None
-            if isinstance(target, torch.nn.Linear) and config.enable_lora is None:
-                new_module = Linear(target.in_features, target.out_features, bias=bias, **kwargs)
-            elif config.enable_lora is not None:
-                kwargs.update({"enable_lora": config.enable_lora})
-                # if isinstance(target, Conv1D):
-                if "Conv1D" in str(type(target)):
-                    in_features, out_features = target.weight.shape
-                else:
+            if isinstance(target, torch.nn.Embedding):
+                embedding_kwargs = kwargs.copy()
+                embedding_kwargs.pop("fan_in_fan_out", None)
+                in_features, out_features = target.num_embeddings, target.embedding_dim
+                new_module = Embedding(adapter_name, in_features, out_features, **embedding_kwargs)
+            elif isinstance(target, torch.nn.Conv2d):
+                out_channels, in_channels = target.weight.size()[:2]
+                kernel_size = target.weight.size()[2:]
+                stride = target.stride
+                padding = target.padding
+                new_module = Conv2d(adapter_name, in_channels, out_channels, kernel_size, stride, padding, **kwargs)
+            else:
+                if isinstance(target, torch.nn.Linear):
                     in_features, out_features = target.in_features, target.out_features
                     if kwargs["fan_in_fan_out"]:
                         warnings.warn(
-                            "fan_in_fan_out is set to True but the target module is not a Conv1D. "
+                            "fan_in_fan_out is set to True but the target module is `torch.nn.Linear`. "
                             "Setting fan_in_fan_out to False."
                         )
-                        kwargs["fan_in_fan_out"] = False
-                new_module = MergedLinear(in_features, out_features, bias=bias, **kwargs)
+                        kwargs["fan_in_fan_out"] = config.fan_in_fan_out = False
+                elif isinstance(target, Conv1D):
+                    in_features, out_features = (
+                        target.weight.ds_shape if hasattr(target.weight, "ds_shape") else target.weight.shape
+                    )
+                    kwargs["is_target_conv_1d_layer"] = True
+                    if not kwargs["fan_in_fan_out"]:
+                        warnings.warn(
+                            "fan_in_fan_out is set to False but the target module is `Conv1D`. "
+                            "Setting fan_in_fan_out to True."
+                        )
+                        kwargs["fan_in_fan_out"] = config.fan_in_fan_out = True
+                else:
+                    raise ValueError(
+                        f"Target module {target} is not supported. Currently, only the following modules are supported: "
+                        "`torch.nn.Linear`, `torch.nn.Embedding`, `torch.nn.Conv2d`, `transformers.pytorch_utils.Conv1D`."
+                    )
+                new_module = Linear(adapter_name, in_features, out_features, bias=bias, **kwargs)
+
             _replace_module(parent, target_name, new_module, target)
+        
 
-
-def mark_only_lora_as_trainable(model: nn.Module, bias: str = 'none') -> None:
+def mark_only_lora_as_trainable(model: nn.Module, config) -> None:
+    bias = config.bias
     for n, p in model.named_parameters():
         if 'lora_' not in n:
             p.requires_grad = False
+        if config.modules_to_save is not None:
+            for module_to_save in config.modules_to_save:
+                if module_to_save in n:
+                    p.requires_grad = True
+        # print(n, p.requires_grad)
     if bias == 'none':
         return
     elif bias == 'all':

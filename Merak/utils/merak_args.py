@@ -1,7 +1,7 @@
 # coding=utf-8
 # Copyright (c) 2022, HPDL group, PDL lab, NUDT.  All rights reserved.
 #
-# Maintainer: Swli (lucasleesw9@gmail.com), TXacs (txacs1993@gmail.com)
+# Maintainer: Swli (lucasleesw9@gmail.com), TXacs (txacs1993@gmail.com), Yck(eyichenke@gmail.com)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -147,7 +147,7 @@ class MerakArguments(TrainingArguments):
     -   loss_scale_window (int, defaults to 1000) -- 'loss_scale_window is a fp16 parameter representing the window over which to raise/lower the dynamic loss scale value.'
     -   hysteresis (int, defaults to 2) -- 'hysteresis is a fp16 parameter representing the delay shift in dynamic loss scaling.'
     -   min_loss_scale (int, defaults to 1) -- 'min_loss_scale is a fp16 parameter representing the minimum dynamic loss scale value.'
-    -   custom_partition (float, str, defaults to None) -- 'Customize the partition size of the model. Length of list is pipeline_world_size + 1.
+    -   custom_partition (float, defaults to None) -- 'Customize the partition size of the model. Length of list is pipeline_world_size + 1.
                                                            'Example: [0, 6, 12, 18, 26, ..., last_layer_idx]', Default to None.
     -   no_tie_modules (bool, defaults to False) -- Whether to set tie modules.
     -   save_total_limit (int, defaults to -1) -- Limit the max numbers of checkpoints.
@@ -156,6 +156,7 @@ class MerakArguments(TrainingArguments):
     -   out_seq_length (int, Optional, defaults to 1024) -- The maximum sequence length that this model's output. Defaults to 1024.
     -   temperature (float, Optional, defaults to 0.9) -- Sampling temperature.
     -   lora_config (str, Optional, defaults to None) -- Set lora config path.
+    -   adapter_name (str, Optional, defaults to default) -- The name of the adapter to be injected, if not provided, the default adapter name is used ('default').
     """
 
     train_schedule: str = field(
@@ -280,7 +281,7 @@ class MerakArguments(TrainingArguments):
         metadata={"help": "Whether to split input data"}
     )
     parallel_vocab: bool = field(
-        default=True,
+        default=False,
         metadata={"help": "Whether to parallel vocabulary when TMP > 1"}
     )
     sequence_parallel: bool = field(
@@ -372,10 +373,15 @@ class MerakArguments(TrainingArguments):
         default=None,
         metadata={"help": "Set lora config path"}
     )
-
+    adapter_name: str = field(
+        default="default",
+        metadata={"help": "The name of the adapter to be injected, if not provided, the default adapter name is used ('default')."}
+    )
     def get_lora_config(self):
         with open(self.lora_config, "r") as f:
             lora_kwargs = json.load(f)
+        if "auto_mapping" in lora_kwargs.keys():
+            lora_kwargs.pop("auto_mapping")
         return lora_kwargs
 
 

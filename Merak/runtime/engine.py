@@ -23,7 +23,6 @@ from .config import DeepSpeedConfig, ZERO_SUPPORTED_OPTIMIZERS
 from ..utils import logger, log_dist
 from ..utils.timer import ThroughputTimer, SynchronizedWallClockTimer
 from ..modules.module import PipelineModule
-from ..modules.lora.utils import mark_only_lora_as_trainable, _find_and_replace
 from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
 
 from ..utils.fp16_optimizer import FP16_Optimizer
@@ -154,7 +153,10 @@ class DeepSpeedEngine(Module):
         # Configure optimizer and scheduler
         if self.args.half_precision_backend == "amp":
             self.scaler = GradScaler()
-        self._configure_optimizer(optimizer, model_parameters)
+        if optimizer is not None:
+            self._configure_optimizer(optimizer, model_parameters)
+        else:
+            self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
 
 
@@ -340,21 +342,23 @@ class DeepSpeedEngine(Module):
         """
         Prints the number of trainable parameters in the model.
         """
+        dist.barrier()
         trainable_params = 0
         all_param = 0
-        for _, param in self.named_parameters():
-            all_param += param.numel()
-            if param.requires_grad:
-                trainable_params += param.numel()
         if mpu.get_data_parallel_rank() == 0 and mpu.get_model_parallel_rank() == 0:
-            print(
+            for _, param in self.named_parameters():
+                all_param += param.numel()
+                if param.requires_grad:
+                    trainable_params += param.numel()
+            logger.info(
                 f"stage: {mpu.get_pipe_parallel_rank()} || trainable params: {trainable_params} \
                   || all params: {all_param} || trainable%: {100 * trainable_params / all_param}"
             )
 
     def loramodel(self, config):
-        _find_and_replace(self, config)
-        mark_only_lora_as_trainable(self, config.bias)
+        from ..modules.lora.utils import mark_only_lora_as_trainable, _find_and_replace
+        _find_and_replace(self, adapter_name=self.args.adapter_name, config=config)
+        mark_only_lora_as_trainable(self, config)
 
     def _broadcast_model(self):
 

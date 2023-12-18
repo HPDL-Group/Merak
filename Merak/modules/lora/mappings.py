@@ -1,7 +1,5 @@
 # coding=utf-8
-# Copyright (c) 2022, HPDL group, PDL lab, NUDT.  All rights reserved.
-#
-# Maintainer: TXacs (txacs1993@gmail.com)
+# Copyright 2023-present the HuggingFace Inc. team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -47,3 +45,5 @@ TRANSFORMERS_MODELS_TO_LORA_TARGET_MODULES_MAPPING = {
     "mistral": ["q_proj", "v_proj"],
     "stablelm": ["q_proj", "v_proj"],
 }
+
+

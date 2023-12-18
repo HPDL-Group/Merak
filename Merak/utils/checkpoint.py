@@ -30,8 +30,11 @@ import torch.distributed as dist
 import datetime
 from ..modules.lora.config import PeftType
 from collections import OrderedDict
+import json
+from dataclasses import asdict
 
 _CHECKPOINT_VERSION = None
+TRANSFORMERS_MODEL_NAME = ["pytorch_model.bin", "adapter_model.bin"]
 
 def set_checkpoint_version(value):
     global _CHECKPOINT_VERSION
@@ -234,7 +237,9 @@ def save_checkpoint(iteration, model, optimizer, lr_scheduler, best_model, args,
 
     # Only rank zero of the data parallel writes to the disk.
     model = unwrap_model(model)
-    checkpoint_name, zero_ckpt_name = get_checkpoint_name(save_path, iteration, args, best=best_model)
+    checkpoint_name, zero_ckpt_name = get_checkpoint_name(save_path, iteration, args,
+                                                          best=best_model,
+                                                          peft=kwargs["peft_config"] is not None)
 
     if not torch.distributed.is_initialized() or mpu.get_data_parallel_rank() == 0:
 
@@ -265,13 +270,24 @@ def save_checkpoint(iteration, model, optimizer, lr_scheduler, best_model, args,
                 = get_cuda_rng_tracker().get_states()
 
         # Save.
-        if args.lora_config is not None and kwargs["peft_config"] is not None:
+        ensure_directory_exists(checkpoint_name)
+        if args.lora_config is not None or kwargs["peft_config"] is not None:
             peft = True
             peft_state_dict = get_peft_model_state_dict(model, kwargs["peft_config"])
+
+            output_path = os.path.join(os.path.dirname(checkpoint_name), "lora_config.json")
+            output_dict = asdict(kwargs["peft_config"])
+            # converting set type to list
+            for key, value in output_dict.items():
+                if isinstance(value, set):
+                    output_dict[key] = list(value)
+
+            # save config
+            with open(output_path, "w") as writer:
+                writer.write(json.dumps(output_dict, indent=2, sort_keys=True))
+
         else:
             peft = False
-        checkpoint_name = get_checkpoint_name(save_path, iteration, best=best_model, peft=peft)
-        ensure_directory_exists(checkpoint_name)
         torch.save(state_dict if not peft else peft_state_dict, checkpoint_name, _use_new_zipfile_serialization=False)
 
     if args.zero_optimization:
@@ -305,34 +321,43 @@ def save_checkpoint(iteration, model, optimizer, lr_scheduler, best_model, args,
         torch.distributed.barrier()
 
 
-def load_checkpoint(model, optimizer, lr_scheduler, args, load_arg='load', strict=True):
+def load_checkpoint(model, optimizer, lr_scheduler, args, verbose=False, strict=True):
     """Load a model checkpoint and return the iteration.
     strict (bool): whether to strictly enforce that the keys in
         :attr:`state_dict` of the checkpoint match the names of
         parameters and buffers in model.
     """
 
-    load_dir = args.resume_from_checkpoint #getattr(args, load_arg)
+    load_dir = args.resume_from_checkpoint
     model = unwrap_model(model)
 
-    # Read the tracker file and set the iteration.
-    tracker_filename = get_checkpoint_tracker_filename(load_dir)
+    checkpoint_name = find_tf_checkpoint_files(load_dir, TRANSFORMERS_MODEL_NAME[0])
+    if checkpoint_name is None:
+        # Read the tracker file and set the iteration.
+        tracker_filename = get_checkpoint_tracker_filename(load_dir)
 
-    # If no tracker file, return iretation zero.
-    if not os.path.isfile(tracker_filename):
-        print_rank_0('WARNING: could not find the metadata file {} '.format(
-            tracker_filename))
-        print_rank_0('    will not load any checkpoints and will start from '
-                     'random')
-        return 0
+        # If no tracker file, return iretation zero.
+        if not os.path.isfile(tracker_filename):
+            print_rank_0('WARNING: could not find the metadata file {} '.format(
+                tracker_filename))
+            print_rank_0('    will not load any checkpoints and will start from '
+                        'random')
+            return 0
+        # Otherwise, read the tracker file and either set the iteration or
+        # mark it as a release checkpoint.
+        iteration, release = read_metadata(tracker_filename)
+        checkpoint_name, zero_ckpt_name = get_checkpoint_name(load_dir, iteration, args, release)
+    elif checkpoint_name:
+        checkpoint_name = checkpoint_name[0]
+        iteration, release = 0, True
+    else:
+        return 0, None, None
 
-    # Otherwise, read the tracker file and either set the iteration or
-    # mark it as a release checkpoint.
-    iteration, release = read_metadata(tracker_filename)
-
-    checkpoint_name, zero_ckpt_name= get_checkpoint_name(load_dir, iteration, args, release)
-    if args.zero_optimization:
-        opt_state_dict = torch.load(zero_ckpt_name, map_location='cpu')
+    if args.zero_optimization and not release:
+        if os.path.isfile(zero_ckpt_name):
+            opt_state_dict = torch.load(zero_ckpt_name, map_location='cpu')
+    else:
+        opt_state_dict = None
 
     print_rank_0(f' loading checkpoint from {args.resume_from_checkpoint} at iteration {iteration}')
 
@@ -346,16 +371,8 @@ def load_checkpoint(model, optimizer, lr_scheduler, args, load_arg='load', stric
         print_rank_0(e)
         sys.exit()
 
-    # adapt model by using fake data 
-    if "module.1._tensor_constant0" in model.state_dict().keys():
-        new_state_dict = {}
-        for n, p in state_dict['model'].items():
-            if n == "module.0.transformer.wte.weight":
-                new_state_dict[n] = p
-                new_state_dict["module.1._tensor_constant0"] = model.state_dict()["module.1._tensor_constant0"]
-            else:
-                new_state_dict[n] = p
-        state_dict['model'] = new_state_dict
+    # check merak or transformer model
+    state_dict, strict = check_state_dict(model, state_dict, args, verbose)
 
     # set checkpoint version
     set_checkpoint_version(state_dict.get('checkpoint_version', 0))
@@ -468,14 +485,97 @@ def unwrap_model(model):
         return unwrapped_model[0]
     return unwrapped_model
 
-# peft
-def load_peft_model_state_dict(model, args, peft_config):
-    load_dir = args.resume_from_checkpoint #getattr(args, load_arg)
-    # Read the tracker file and set the iteration.
-    tracker_filename = get_checkpoint_tracker_filename(load_dir)
-    iteration, release = read_metadata(tracker_filename)
+def find_tf_checkpoint_files(path, model_name):
+    for root, dirs, files in os.walk(path):
+        tf_ckpt_file = set(files).intersection(set(TRANSFORMERS_MODEL_NAME))
+        if tf_ckpt_file:
+            return [os.path.join(root, file) for file in tf_ckpt_file if model_name in file]
+    return None
 
-    filename = get_checkpoint_name(load_dir, iteration, release, peft=True)
+
+def same_layer_idx(list1, list2):
+    digits1 = set([int(x) for x in list1 if x.isdigit()])
+    digits2 = set([int(x) for x in list2 if x.isdigit()])
+    return digits1 == digits2
+
+def check_state_dict(model, old_state_dict, args, verbose=False, load_list=None):
+    load_dir = args.resume_from_checkpoint
+    new_keys = list(model.state_dict().keys())
+    old_keys = list(old_state_dict.keys())
+
+    if new_keys == old_keys:
+        return old_state_dict, True
+
+    def convert_key(new_keys, old_keys, state_dict):
+        new_state_dict = {}
+
+        for i in range(len(new_keys)):
+            for j in range(len(old_keys)):
+                split_mk = new_keys[i].split(".")[2:]
+                split_uk = old_keys[j].split(".")
+                mk = ".".join(split_mk)
+                uk = ".".join(split_uk)
+                min_len = min(len(split_mk), len(split_uk))
+                if mk == uk or new_keys[i] == old_keys[j]:
+                    new_state_dict[new_keys[i]] = state_dict[old_keys[j]]
+                    # print(new_keys[i], old_keys[j], mpu.get_pipe_parallel_rank())
+                    break
+                elif min_len <= 3 and same_layer_idx(split_mk, split_uk) and split_mk[-2:] == split_uk[-2:]:
+                    new_state_dict[new_keys[i]] = state_dict[old_keys[j]]
+                    # print(new_keys[i], old_keys[j], mpu.get_pipe_parallel_rank())
+                    break
+                elif min_len > 3 and same_layer_idx(split_mk, split_uk) and split_mk[-4:] == split_uk[-4:]:
+                    new_state_dict[new_keys[i]] = state_dict[old_keys[j]]
+                    # print(new_keys[i], old_keys[j], mpu.get_pipe_parallel_rank())
+                    break
+
+        return new_state_dict
+
+    convert_state_dict = convert_key(new_keys, old_keys, old_state_dict)
+
+    convert_keys = convert_state_dict.keys()
+
+    missing_keys = list(set(new_keys) - set(convert_keys))
+    unexcepted_keys = list(set(convert_keys) - set(new_keys))
+
+    strict = True
+
+    if len(missing_keys) != 0:
+        # if missing keys has no lora module, do not print it.
+        if load_list is not None:
+            for n in load_list:
+                if n not in ".".join(missing_keys):
+                    verbose = False
+        if verbose and mpu.get_data_parallel_rank() == 0:
+            print(f'Stage {mpu.get_pipe_parallel_rank()}:'
+                   'Warning! Some weights of model were not initialized from the model checkpoint.'
+                  f'Missing keys: {missing_keys}')
+        strict = False
+    if len(unexcepted_keys) != 0:
+        if verbose and mpu.get_data_parallel_rank() == 0:
+            print(f'Stage {mpu.get_pipe_parallel_rank()}:'
+                  f'Warning! Some weights of the model checkpoint at {load_dir} were not used.'
+                  f'Unexcepted keys: {unexcepted_keys}')
+        strict = False
+    return convert_state_dict, strict
+
+
+# peft
+def load_peft_model_state_dict(model, args, peft_config, verbose=False):
+    load_dir = args.resume_from_checkpoint
+    checkpoint_name = find_tf_checkpoint_files(load_dir, TRANSFORMERS_MODEL_NAME[1])
+
+    if checkpoint_name is None:
+        # Read the tracker file and set the iteration.
+        tracker_filename = get_checkpoint_tracker_filename(load_dir)
+        iteration, release = read_metadata(tracker_filename)
+        filename, _ = get_checkpoint_name(load_dir, iteration, args,release=release, peft=True)
+    elif checkpoint_name:
+        filename = checkpoint_name[0]
+        iteration = 0
+    else:
+        return None
+
     if not os.path.isfile(filename):
         if mpu.get_data_parallel_rank() == 0:
             print(f'WARNING ! The path {args.resume_from_checkpoint} has no lora model files {filename}')
@@ -486,7 +586,7 @@ def load_peft_model_state_dict(model, args, peft_config):
 
 
     peft_state_dict = torch.load(filename, map_location=torch.device("cpu"))
-    load_results = set_peft_model_state_dict(model, peft_state_dict, peft_config)
+    load_results = set_peft_model_state_dict(model, peft_state_dict, args, peft_config, verbose)
     return load_results
 
 
@@ -503,6 +603,7 @@ def get_peft_model_state_dict(model, peft_config, state_dict=None):
     """
     if state_dict is None:
         state_dict = model.state_dict()
+    modules_to_save = peft_config.modules_to_save
     if peft_config.peft_type == PeftType.LORA:
         # to_return = lora_state_dict(model, bias=model.peft_config.bias)
         # adapted from `https://github.com/microsoft/LoRA/blob/main/loralib/utils.py`
@@ -522,12 +623,17 @@ def get_peft_model_state_dict(model, peft_config, state_dict=None):
                         to_return[bias_name] = state_dict[bias_name]
         else:
             raise NotImplementedError
+        for ms in modules_to_save:
+            for k in state_dict:
+                if ms in k:
+                    to_return[k] = state_dict[k]
+
     else:
         raise NotImplementedError
 
     return to_return
 
-def set_peft_model_state_dict(model, peft_model_state_dict, peft_config, adapter_name=""):
+def set_peft_model_state_dict(model, peft_model_state_dict, args, peft_config, verbose=False):
     """
     Set the state dict of the Peft model.
 
@@ -537,13 +643,18 @@ def set_peft_model_state_dict(model, peft_model_state_dict, peft_config, adapter
     """
     config = peft_config
     state_dict = peft_model_state_dict
+    adapter_name = args.adapter_name
+    modules_to_save = peft_config.modules_to_save
 
     if config.peft_type in (PeftType.LORA,):
         peft_model_state_dict = {}
         parameter_prefix = {
             PeftType.LORA: "lora_",
         }[config.peft_type]
+        modules_to_save.append(parameter_prefix)
         for k, v in state_dict.items():
+            if adapter_name in k:
+                adapter_name = ""
             if parameter_prefix in k:
                 suffix = k.split(parameter_prefix)[1]
                 if "." in suffix:
@@ -560,6 +671,10 @@ def set_peft_model_state_dict(model, peft_model_state_dict, peft_config, adapter
     else:
         raise NotImplementedError
 
-    load_result = model.load_state_dict(peft_model_state_dict, strict=False)
+    peft_model_state_dict, strict = check_state_dict(model, peft_model_state_dict, args, verbose, load_list=modules_to_save)
+
+    load_result = model.load_state_dict(peft_model_state_dict, strict=strict)
+
+    del peft_model_state_dict
 
     return load_result

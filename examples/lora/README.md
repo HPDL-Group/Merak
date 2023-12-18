@@ -16,19 +16,19 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-## Merak text generation examples
+## Merak lora examples
 
 This demonstrates how to perform lora using Merak.
 
 ```bash
-python -um torch.distributed.launch --nproc_per_node=4 run_gpt.py \
-               --model-name gpt2 \
-               --output_dir ./output \
-               --per_device_train_batch_size 1 --gradient_accumulation_steps 1 \
-               --max_steps 20 \
-               --activation_checkpointing false --checkpoint_num_layers 0 \
-               --input_names "input_ids" \
-               --lora_config "./adapter_config.json" \
-               --no_load_optim true \
-	           --fake-data true --save --save_steps 5 --resume_from_checkpoint /dat/txacs/merak-final/test-examples/peft-gpt2/output/2023-11-15_ckpt
+python -m torch.distributed.launch --nproc_per_node=4  run_vit.py \
+                --per_device_train_batch_size 128 --gradient_accumulation_steps 4  \
+                --cache-dir ./vit_cache \
+                --output_dir ./output --remove_unused_columns False \
+                --input_name "pixel_values" \
+                --activation_checkpointing false --checkpoint_num_layers 0 \
+                --num_train_epochs 5 --learning_rate 5e-3 --dataloader_num_workers 4 \
+                --evaluation_strategy='epoch' --return_logits true \
+                --save --save_steps 100 --seed 42 \
+                --resume_from_checkpoint ./output/ckpt --lora_config ./lora_config.json
 ```

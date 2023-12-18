@@ -204,23 +204,25 @@ def train(
             self.state.global_step = iteration
             self.pipe_model.global_steps = iteration
 
-        if self.args.lora_config:
-            assert self.mp == 1, "Don't support tensor parallelism in peft"
-            peft_config = LoraConfig(**self.args.get_lora_config())
-            peft_config = _prepare_lora_config(peft_config, self.model.config.to_dict())
-            self.pipe_model.loramodel(peft_config)
-            self.peft_config = peft_config
+    if self.args.lora_config:
+        assert self.mp == 1, "Don't support tensor parallelism for lora, currently"
+        peft_config = LoraConfig(**self.args.get_lora_config())
+        peft_config = _prepare_lora_config(peft_config, self.model.config.to_dict())
+        self.pipe_model.loramodel(peft_config)
+        self.peft_config = peft_config
 
-            # reset optimizer
-            self.create_optimizer()
-            self.pipe_model._configure_optimizer(self.optimizer, None)
+        if resume_from_checkpoint and os.path.isdir(resume_from_checkpoint):
+            load_results = self.load_from_checkpoint(resume_from_checkpoint, peft=True)
 
-            if resume_from_checkpoint and os.path.isdir(resume_from_checkpoint):
-                load_results = self.load_from_checkpoint(resume_from_checkpoint, peft=True)
+        # reset optimizer
+        self.create_optimizer()
+        self.create_scheduler(num_training_steps=max_steps, optimizer=self.optimizer)
+        self.pipe_model._configure_optimizer(self.optimizer, None)
+        self.pipe_model.lr_scheduler = self.lr_scheduler
 
-            self.pipe_model.print_trainable_parameters()
-        else:
-            self.peft_config = None
+        self.pipe_model.print_trainable_parameters()
+    else:
+        self.peft_config = None
 
 
     # Train!

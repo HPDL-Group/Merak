@@ -199,7 +199,7 @@ class DistributedDataset:
             return DataLoader(
                 self.dataset,
                 batch_sampler=train_sampler,
-                collate_fn=self.data_collator if not isinstance(self.dataset, torch.utils.data.Dataset) else None, 
+                collate_fn=self.data_collator if not isinstance(self.dataset, torch.utils.data.Dataset) else None,
                 num_workers=self.args.dataloader_num_workers,
                 pin_memory=self.args.dataloader_pin_memory,
             )

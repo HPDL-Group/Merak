@@ -92,3 +92,4 @@ from .merak_trainer import MerakTrainer
 from .utils.merak_args import MerakArguments
 from .modules import set_tp_layer_lists
 from .text_generation_inference import text_generation_pipeline
+from .utils.logging import AccMetric

@@ -38,6 +38,7 @@ from .runtime.utils import see_memory_usage
 from .runtime.checkpointing import checkpoint as checkpoint_func
 from .runtime.pipe_engine import PipelineEngine
 
+from .utils import WorkerInitObj
 from .utils.merak_args import mergeargs, MerakArguments, manual_set_args
 from .utils.dataloader import MegatronPretrainingRandomSampler
 from .utils.logging import AccMetric, log_dist
@@ -332,8 +333,10 @@ class MerakTrainer(Trainer):
                     param.model_parallel = False
         
         self.model = pipe_model
-        self.create_optimizer()
-        self.create_scheduler(num_training_steps=num_training_steps, optimizer=self.optimizer)
+        delay_create_opt_sch = os.path.isfile(self.args.lora_config) if self.args.lora_config is not None else False
+        if not delay_create_opt_sch:
+            self.create_optimizer()
+            self.create_scheduler(num_training_steps=num_training_steps, optimizer=self.optimizer)
         
         deepspeed_config = {
                             "train_micro_batch_size_per_gpu": self.args.per_device_train_batch_size,
@@ -434,12 +437,15 @@ class MerakTrainer(Trainer):
 
         train_sampler = self._get_train_sampler()
 
+        worker_init = WorkerInitObj(self.args.seed + mpu.get_data_parallel_rank())
+
         return torch.utils.data.DataLoader(
             train_dataset,
             batch_sampler=train_sampler,
             collate_fn=self.data_collator,
             num_workers=self.args.dataloader_num_workers,
             pin_memory=self.args.dataloader_pin_memory,
+            worker_init_fn=worker_init if self.args.dataloader_num_workers > 0 else None
         )
 
     def _get_iter_dataloader(self):
@@ -642,10 +648,10 @@ class MerakTrainer(Trainer):
     def load_from_checkpoint(self, resume_from_checkpoint, peft=False):
         if os.path.exists(resume_from_checkpoint):
             if peft:
-                load_results = load_peft_model_state_dict(self.pipe_model, self.args, self.peft_config)
+                load_results = load_peft_model_state_dict(self.pipe_model, self.args, self.peft_config, verbose=True)
                 return load_results
             else:
-                iteration, state_dict, opt_state_dict = load_checkpoint(self.pipe_model, self.optimizer, self.lr_scheduler, self.args)
+                iteration, state_dict, opt_state_dict = load_checkpoint(self.pipe_model, self.optimizer, self.lr_scheduler, self.args, verbose=True)
             del state_dict, opt_state_dict
 
         else:
