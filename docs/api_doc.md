@@ -1,7 +1,7 @@
 <!---
 Copyright (c) 2022, HPDL group, PDL lab, NUDT.  All rights reserved.
 
-Maintainer: TXacs (txacs1993@gmail.com), Swli (lucasleesw9@gmail.com)
+Maintainer: TXacs (txacs1993@gmail.com), Swli (lucasleesw9@gmail.com), Yck(eyichenke@gmail.com)
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -38,6 +38,10 @@ Extra parameters:
 
 -   train_schedule (str, Optional,  defaults to '1f1b') -- Possible choices are the pipe schedules as strings: '1f1b','pre_recompute_1f1b','ds_default','last_no_recompute_1f1b','shifted_critical_path'.
 -   partition_method (str, Optional, defaults to 'uniform') -- Possible choices are the pipeline layer partition strategy as strings: 'uniform','uniform_floor','parameters'.
+-   split_method(str, Optional, defaults to 'farthest_min_deps') -- Possible choices are graph partion method as strings: 'farthest_min_deps','layer_split','nearest_min_deps'.
+-   custom_split_points(List(str), defaults to None) -- Create split points for layer_split method, default is None.
+-   trace_method(str, defaults to 'fx') -- None refers to no tracing, 'fx' refers to use torch.fx for tracing, 'dynamo' refers to use torch._dynamo for tracing.
+-   trace_model(str, Optional, defaults to '') -- Add new trace module. example: --trace_model 'Qwen2ForCausalLM'.
 -   init_method_std (float, defaults to 0.02) -- Standard deviation of the zero mean normal distribution used for tp weight initialization in Megatron.
 -   activation_checkpointing (bool, defaults to True) -- Whether to use activation checkpointing. 
 -   checkpoint_num_layers (int, defaults to 1) -- Chunk size (number of layers) for checkpointing.
@@ -45,11 +49,11 @@ Extra parameters:
                                                            Example: ['input_ids', 'attention_mask', 'token_type_ids']
 -   num_layers (int, Optional, defaults to None) -- Number of hidden layers in the Transformer, will try to get this in model config.
 -   seq_length (int, Optional, defaults to None) -- The maximum sequence length that this model might ever be used with, will try to get this in model config.
+-   num_heads (int, Optional, defaults to None) -- The number of heads that this model might ever be used with, will try to get this in model config. Defaults to None.
 -   wall_clock_breakdown (bool, defaults to False) -- Whether to log detail time spend on each rank.
 -   shard_count (int, Optional, defaults to None) -- Number of shards that model needs to be break, will be training_args.num_layers*2 if not set.
 -   prescale_gradients (bool, defaults to False) -- Whether to enable gradient prescaling.
 -   gradient_predivide_factor (float, defaults to 1.0) -- Gradient predivide factor in gradient prescaling.
--   zero_optimization (bool, defaults to False) -- Whether to enable zero optimization.
 -   zero_allow_untested_optimizer (bool, defaults to False) -- Whether to allow wrap untested optimizer. The untested optimizer does not guarantee the correctness of training.
 -   zero_stage (float, defaults to 1) -- Stage of zero optimization.
 -   zero_allgather_bucket_size (float, defaults to 500000000) -- The bucket size per communication in optimzier step.
@@ -88,6 +92,8 @@ Extra parameters:
 -   out_seq_length (int, Optional, defaults to 1024) -- The maximum sequence length that this model's output. Defaults to 1024.
 -   temperature (float, Optional, defaults to 0.9) -- Sampling temperature.
 -   lora_config (str, Optional, defaults to None) -- Set lora config path.
+-   adapter_name (str, Optional, defaults to default) -- The name of the adapter to be injected, if not provided, the default adapter name is used ('default').
+
 
 
 ### class *Merak.MerakTrainer*

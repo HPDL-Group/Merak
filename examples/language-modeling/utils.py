@@ -88,27 +88,32 @@ def create_tokenizer(cache_dir, model_name, config):
     }
     
     # Only rank 0 to download files
-    if dist.get_rank() == 0:
-        tokenizer = AutoTokenizer.from_pretrained(model_name, 
-            local_files_only=check_cache(cache_dir), 
-            config=config,
-            **tokenizer_kwargs)
-    dist.barrier()
-    if dist.get_rank() != 0:
-        tokenizer = AutoTokenizer.from_pretrained(model_name, 
-            local_files_only=check_cache(cache_dir), 
-            config=config,
-            **tokenizer_kwargs)
-    dist.barrier()
+    tokenizer = AutoTokenizer.from_pretrained(cache_dir, config=config)
+    # if dist.get_rank() == 0:
+    #     tokenizer = AutoTokenizer.from_pretrained(model_name, 
+    #         local_files_only=check_cache(cache_dir), 
+    #         config=config,
+    #         **tokenizer_kwargs)
+    # dist.barrier()
+    # if dist.get_rank() != 0:
+    #     tokenizer = AutoTokenizer.from_pretrained(model_name, 
+    #         local_files_only=check_cache(cache_dir), 
+    #         config=config,
+    #         **tokenizer_kwargs)
+    # dist.barrier()
     return tokenizer
 
-def preprocessing_datasets(datasets, tokenizer_func, model_name):
+def preprocessing_datasets(model, datasets, tokenizer_func, model_name):
     column_names = datasets["train"].column_names
     text_column_name = "text" if "text" in column_names else column_names[0]
 
     max_seq_length = tokenizer_func.model_max_length
-    if max_seq_length > 1024:
-        max_seq_length = 1024
+    if hasattr(model.config, "n_positions"):
+        seq_length = model.config.n_positions
+    else:
+        seq_length = model.config.max_position_embeddings
+    if max_seq_length > seq_length:
+        max_seq_length = seq_length
 
     # we tokenize every text, then concatenate them together before splitting them in smaller parts.
     # We use `return_special_tokens_mask=True` because DataCollatorForLanguageModeling (see below) is more
@@ -204,7 +209,7 @@ class Prepare_data(Dataset):
                     new_rows.append(segment1_)
                 new_rows.append(segment2)
         ds2 = pd.DataFrame(new_rows, columns=['context'])
-        ds = ds.append(ds2)
+        ds = pd.concat([ds,ds2])
         return ds
 
     def __len__(self):

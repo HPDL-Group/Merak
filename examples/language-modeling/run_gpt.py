@@ -72,7 +72,8 @@ def main():
     model = GPT2LMHeadModel(config)
 
     # Preprocessing the datasets.
-    train_dataset, eval_dataset = preprocessing_datasets(raw_datasets, tokenizer, args.model_name)
+    train_dataset, eval_dataset = preprocessing_datasets(model, raw_datasets, 
+                                                         tokenizer, args.model_name)
 
 
     # Initialize our Trainer)
@@ -81,15 +82,13 @@ def main():
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset, 
-        tokenizer=tokenizer,
+        # tokenizer=tokenizer,
         # Data collator will default to DataCollatorWithPadding, so we change it.
         data_collator=default_data_collator,
     )
 
     # Training
-    train_result = trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
-    metrics = train_result.metrics
-    trainer.log_metrics("train", metrics)
+    trainer.train()
 
 
 if __name__ == "__main__":

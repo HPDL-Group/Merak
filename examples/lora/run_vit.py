@@ -17,8 +17,9 @@
 
 # using our distributed trainer
 import Merak
-from Merak import MerakArguments, MerakTrainer, AccMetric, mpu
-from Merak.utils import WorkerInitObj
+from Merak import MerakArguments, MerakTrainer
+from Merak.core import mpu
+from Merak.core.printer import AccMetric
 
 import transformers
 from transformers.utils.dummy_vision_objects import ViTFeatureExtractor
@@ -185,21 +186,6 @@ def main():
         return metric
 
     class ViTTrainer(MerakTrainer):
-        def get_eval_dataloader(self):
-
-            eval_dataset = self.eval_dataset
-
-            worker_init = WorkerInitObj(self.args.seed + mpu.get_data_parallel_rank())
-            return torch.utils.data.DataLoader(
-                eval_dataset,
-                sampler=None,
-                batch_size=self.args.per_device_train_batch_size,
-                collate_fn=self.data_collator,
-                num_workers=self.args.dataloader_num_workers,
-                pin_memory=self.args.dataloader_pin_memory,
-                drop_last=True,
-                worker_init_fn=worker_init
-            )
 
         def create_optimizer(self):
             def get_parameter_names(model, forbidden_layer_types):
@@ -232,41 +218,82 @@ def main():
                 },
             ]
             adam_kwargs = {
-            "betas": (0.9, 0.999),
-            "eps": 1e-8,
-                    }
-            self.optimizer = AdamW(optimizer_grouped_parameters, lr=training_args.learning_rate, **adam_kwargs)
-        def do_prediction(self):
-            eval_dataloader = self.get_eval_dataloader()
+                "betas": (0.9, 0.999),
+                "eps": 1e-8,
+            }
+            optimizer = AdamW(
+                optimizer_grouped_parameters, lr=training_args.learning_rate, **adam_kwargs
+            )
+            return optimizer
 
-            # keep training iterator
-            train_loader =self.pipe_model.data_iterator
-            # create eval iterator
-            self.pipe_model.set_dataiterator(eval_dataloader)
-            if self.args.eval_iters is not None:
-                eval_step = self.args.eval_iters
-            else:
-                eval_step = len(eval_dataloader)//self.args.gradient_accumulation_steps
-            # eval_iterator = iter(eval_dataloader)
+        def evaluation(self):
+            assert self.eval_dataloader is not None, \
+            "The eval_dataloader is None, Please check eval_dataset"
+            if self.eval_engine is None:
+                self.eval_engine = self.engine(
+                                        self.train_engine.module,
+                                        self.args,
+                                        optimizer=None,
+                                        lr_scheduler=None,
+                                        tuning_params=self.eval_params,
+                                        dataloader=self.eval_dataloader,
+                                        loss_fn=self.loss_fn
+                                        )
+
             metrics = AccMetric()
-            for idx in range(eval_step):
-                loss, logits, labels = self.pipe_model.eval_batch()
-                metrics.update('eval_loss', loss.item())
-                if self.pipe_model.is_last_stage() and self.args.return_logits:
+
+            for _ in range(self.eval_params.eval_steps):
+                # try:
+                self.eval_params.step += 1
+                self.eval_params.global_steps += 1
+
+                loss, logits, labels = self.eval_engine.eval_batch(
+                                                    batch_fn=self.prepare_data)
+
+                if self.eval_engine.is_last_stage() and self.args.return_logits:
                     label_list = []
+                    logit_list = []
                     for i in labels:
                         label_list.append(i[0])
+                    for i in logits:
+                        logit_list.append(i[0])
                     del labels
-                    step_metrics = self.compute_metrics(
-                        transformers.trainer_utils.EvalPrediction(predictions=torch.cat(logits).cpu(), 
-                        label_ids=torch.cat(label_list).cpu())
+                    step_metrics = compute_metrics(
+                        transformers.trainer_utils.EvalPrediction(
+                            predictions=torch.cat(logit_list).cpu(),
+                            label_ids=torch.cat(label_list).cpu()
+                            )
                         )
                     for key in step_metrics:
                         metrics.update(key, step_metrics[key])
-                dist.barrier()
-            # Restore the training iterator
-            self.pipe_model.set_dataiterator(train_loader)
-            return metrics.avg
+                # except StopIteration:
+                #     self.eval_engine.timers('eval_batch').stop()
+                #     break
+            if self.summary_writer is not None:
+                self.summary_events = [
+                    (f'Eval/loss',
+                    loss.mean().item(),
+                    self.eval_params.global_steps),
+                ]
+                for event in self.summary_events:  # write_summary_events
+                    self.summary_writer.add_scalar(
+                        event[0],
+                        event[1],
+                        event[2]
+                    )
+                avg_acc = list(metrics.avg.values())[0]
+                self.summary_events = [
+                    (f'Eval/Accuracy',
+                    avg_acc,
+                    self.eval_params.global_steps),
+                ]
+                for event in self.summary_events:  # write_summary_events
+                    self.summary_writer.add_scalar(
+                        event[0],
+                        event[1],
+                        event[2]
+                    )
+            self.eval_engine.reset_dataiterator(self.eval_dataloader)
 
     # Initalize our trainer
     trainer = ViTTrainer(

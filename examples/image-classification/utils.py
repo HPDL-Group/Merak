@@ -63,7 +63,8 @@ def compute_metrics(p, normalize=True, sample_weight=None):
     # Load the accuracy metric from the datasets package
     metric = {
             "accuracy": accuracy_score(
-                p.label_ids, np.argmax(p.predictions, axis=1), normalize=normalize, sample_weight=sample_weight
+                p.label_ids, np.argmax(p.predictions, axis=1), 
+                normalize=normalize, sample_weight=sample_weight
             ).item(),
         }
     return metric
@@ -73,14 +74,17 @@ def prepare_dataset(data_path, cache_dir):
     data_files = {}
     data_files['train'] = os.path.join(data_path, "train/**")
     data_files['validation'] = os.path.join(data_path, "val/**")
-    ds = load_dataset(
-        'imagefolder',
-        # data_args.dataset_config_name,
-        data_files=data_files,
-        cache_dir=cache_dir,
-        task="image-classification",
-        ignore_verifications=True,
-    )
+    if os.path.isdir(cache_dir):
+        ds = load_dataset(cache_dir)
+    else:
+        ds = load_dataset(
+            'imagefolder',
+            # data_args.dataset_config_name,
+            data_files=data_files,
+            cache_dir=cache_dir,
+            task="image-classification",
+            ignore_verifications=True,
+        )
     # Define torchvision transforms to be applied to each image.
     normalize = Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
     _train_transforms = Compose(

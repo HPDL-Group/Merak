@@ -28,7 +28,7 @@ Merak is adaptive for `transformers.utils.fx`, so if the model can be traced by 
 Running according to following bash:
 
 ```bash
-python -m torch.distributed.launch --nproc_per_node=4  run_t5.py \
+torchrun --nproc_per_node=4  run_t5.py \
                 --model-name t5-base \
                 --data-files ./train_context.csv \
                 --cache-dir ./t5_cache \
@@ -36,7 +36,7 @@ python -m torch.distributed.launch --nproc_per_node=4  run_t5.py \
                 --per_device_train_batch_size 4 --gradient_accumulation_steps 4
 
 
-python -m torch.distributed.launch --nproc_per_node=4  run_gpt.py \
+torchrun --nproc_per_node=4  run_gpt.py \
                 --model-name gpt2 \
                 --data-files ./train_context.csv \
                 --cache-dir ./gpt2_cache \
@@ -44,7 +44,7 @@ python -m torch.distributed.launch --nproc_per_node=4  run_gpt.py \
                 --per_device_train_batch_size 4 --gradient_accumulation_steps 4
 
 
-python -m torch.distributed.launch --nproc_per_node=4  run_bert.py \
+torchrun --nproc_per_node=4  run_bert.py \
                 --model-name bert-large-uncased  \
                 --data-files ./train_context.csv \
                 --cache-dir ./bert_cache \

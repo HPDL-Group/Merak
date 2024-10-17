@@ -53,10 +53,7 @@ def main(config):
         eval_dataset=dataset_val, 
         leaf_modules=leaf,
     )
-    train_result = trainer.train()
-    metrics = train_result.metrics
-    print(metrics)
-    trainer.log_metrics("train", metrics)
+    trainer.train()
 
 
 if __name__ == '__main__':
@@ -66,7 +63,7 @@ if __name__ == '__main__':
     Merak.init(pp, tp, dp)
 
     if tp > 1:
-        from Merak import set_tp_layer_lists
+        from Merak.core.tensor_parallel.mp_attrs import set_tp_layer_lists
         col_para_list = ['qkv', 'fc1']
         row_para_list = ['proj', 'fc2']
         weight_change_list = [('relative_position_bias_table', 1)]

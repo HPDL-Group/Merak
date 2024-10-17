@@ -1,11 +1,8 @@
-from .logging import logger, log_dist
-from .merak_args import get_args
-import numpy as np
-import random
+__all__ = [
+    'init_empty_weights', 'WorkerInitObj',
+    'MegatronPretrainingRandomSampler', 'BaseParams'
+]
 
-class WorkerInitObj(object):
-    def __init__(self, seed):
-        self.seed = seed
-    def __call__(self, id):
-        np.random.seed(seed=self.seed + id)
-        random.seed(self.seed + id)
+from .device_to_meta import init_empty_weights
+from .trainer_utils import WorkerInitObj, MegatronPretrainingRandomSampler
+from .parameters import BaseParams

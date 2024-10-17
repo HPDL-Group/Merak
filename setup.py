@@ -23,12 +23,15 @@ https://github.com/pypa/sampleproject
 """
 
 # Always prefer setuptools over distutils
-from setuptools import setup, find_packages
+from setuptools import setup, find_packages, Extension
 # To use a consistent encoding
 from codecs import open
 from os import path
-from glob import glob
-from pybind11.setup_helpers import intree_extensions
+NO_PYBIND11 = False
+try:
+    import pybind11
+except ModuleNotFoundError:
+    NO_PYBIND11 = True
 
 here = path.abspath(path.dirname(__file__))
 
@@ -40,22 +43,27 @@ with open(path.join(here, 'README.md'), encoding='utf-8') as f:
 # Fields marked as "Optional" may be commented out.
 
 install_requires = [
-    'torch>=1.10.0',
+    'torch>=2.0.0',
     'torchvision>=0.11.1',
-    'transformers==4.15.0',
+    'transformers>=4.22.0',
     'python-dateutil>=2.1',
     'psutil',
     'tensorboardX>=1.8',
     'datasets>=2.0.0',
-    'huggingface-hub==0.1.2',
+    'huggingface-hub>=0.14.1',
 ]
 
-ext_cpp_modules_path = path.join(here, 'Merak/utils/csrc')
-
-ext_modules = intree_extensions(
-        glob(path.join(ext_cpp_modules_path, '*.cpp')),
-        {"Merak":ext_cpp_modules_path}
-)
+# 定义扩展模块
+if not NO_PYBIND11:
+    ext_modules = [
+        Extension(
+            'autopipe',  # 模块名
+            sources=['Merak/cpp/autopipe.cpp'],  # C++源文件列表
+            include_dirs=[pybind11.get_include()],  # pybind11头文件路径
+            language='c++',  # 指定C++语言
+            extra_compile_args=['-O3'],  # 添加额外的编译选项，例如优化级别
+        )
+    ]
 
 # https://stackoverflow.com/questions/458550/standard-way-to-embed-version-into-python-package/16084844#16084844
 # exec(open('Merak/version.py').read())
@@ -69,7 +77,7 @@ setup(
     # There are some restrictions on what makes a valid project name
     name='Merak',  # Required
 
-    version="1.1.1",  # Required
+    version="2.0.0",  # Required
 
     # This is a one-line description or tagline of what your project does. 
     description='A framework for 3D parallelism',  # Required
@@ -85,7 +93,8 @@ setup(
     # project.
     author='HPDL group',  # Optional
 
-    keywords='Large model training 3D parallelism pytorch GPT2 BERT',  # Optional
+    # Optional
+    keywords='Large model training 3D parallelism pytorch GPT2 BERT',
 
     packages=find_packages(),  # Required
 
@@ -115,8 +124,12 @@ setup(
 
         # Specify the Python versions you support here. In particular, ensure
         # that you indicate whether you support Python 2, Python 3 or both.
-        'Programming Language :: Python :: 3.6',
+        'Programming Language :: Python :: 3.7',
+        'Programming Language :: Python :: 3.8',
+        'Programming Language :: Python :: 3.9',
+        'Programming Language :: Python :: 3.10',
+        'Programming Language :: Python :: 3.11',
     ],
 
-    ext_modules=ext_modules,
+    ext_modules=None if NO_PYBIND11 else ext_modules,
 )

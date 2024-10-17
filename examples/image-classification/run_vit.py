@@ -26,6 +26,7 @@ from transformers import (
     ViTConfig
 )
 
+import torch
 from transformers.utils.dummy_vision_objects import ViTFeatureExtractor
 
 
@@ -51,26 +52,45 @@ def main():
 
     config = ViTConfig(num_labels=1000, return_dict=False)
     model = ViTForImageClassification(config)
-    feature_extractor = ViTFeatureExtractor(image_mean=[0.5, 0.5, 0.5], image_std=[0.5, 0.5, 0.5])
 
     ds = prepare_dataset(args.data_files, args.cache_dir)
 
+    class VitTrainer(MerakTrainer):
+        def create_dataloader(self):
+            self.train_dataloader = torch.utils.data.DataLoader(
+                    self.train_dataset,
+                    batch_sampler=self.get_train_sampler(),
+                    num_workers=self.args.dataloader_num_workers,
+                    pin_memory=self.args.dataloader_pin_memory,
+                    collate_fn=collate_fn,
+                )
+
+        def prepare_data(self, data):
+            if not isinstance(data, (tuple, list)):
+                if isinstance(data, dict):
+                    inputs_list = []
+                    for key, val in self.input_to_stage_dic.items():
+                        for i in val:
+                            inputs_list.append(data.pop(i))
+                    inputs_list += list(data.values())
+                    return tuple(inputs_list)
+                else:
+                    raise NotImplementedError('only support data in tuple, list or dict')
+            else:
+                return data
+
     # Initalize our trainer
-    trainer = MerakTrainer(
+    trainer = VitTrainer(
         model=model,
         args=training_args,
         train_dataset=ds["train"], 
         eval_dataset=ds["validation"],
         # Data collator will default to DataCollatorWithPadding, so we change it.
-        data_collator=collate_fn,
-        compute_metrics=compute_metrics,
-        tokenizer=feature_extractor
+        # compute_metrics=compute_metrics,
     )
 
     # Training
-    train_result = trainer.train()
-    metrics = train_result.metrics
-    trainer.log_metrics("train", metrics)
+    trainer.train()
 
 if __name__ == "__main__":
     main()

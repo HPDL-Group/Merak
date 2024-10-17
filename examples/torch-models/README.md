@@ -23,12 +23,18 @@ This script shows that the torch model, which is not from `transformers` library
 Running with following bash:
 
 ```bash
-python -m torch.distributed.launch --nproc_per_node=4 run_swin.py   \
-                --cfg ./swin_base_patch4_window7_224.yaml  \
-                --output_dir ./output \
-                --per_device_train_batch_size 4 --gradient_accumulation_steps 4 \
-                --num_layers 16 --wall_clock_breakdown True --logging_steps 10 \
-                --data_path /path/to/datasets
+torchrun --nproc_per_node=4 run_swin.py   \
+         --cfg ./swin_base_patch4_window7_224.yaml  \
+         --output_dir ./output \
+         --per_device_train_batch_size 4 --gradient_accumulation_steps 4 \
+         --num_layers 16 --wall_clock_breakdown True --logging_steps 10 \
+         --data_path /path/to/datasets
+
+torchrun --nproc-per-node=4 run_torchvision.py \
+         --data_path /path/to/datasets \
+         --output_dir ./output \
+         --cfg ./swin_base_patch4_window7_224.yaml \
+         --num_layers 152
 ```
 
 Code is based on [Swin-transformer](https://github.com/microsoft/Swin-Transformer) repository.

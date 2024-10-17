@@ -79,9 +79,7 @@ def main():
     )
 
     # Training
-    train_result = trainer.train()
-    metrics = train_result.metrics
-    trainer.log_metrics("train", metrics)
+    trainer.train()
 
 
 if __name__ == "__main__":

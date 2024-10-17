@@ -29,6 +29,7 @@ from transformers import (
     HfArgumentParser,
 )
 
+import torch
 
 def parse_option(parser):
     # easy config modification
@@ -68,7 +69,8 @@ def main():
 
     # Preprocessing the datasets.
     # First we tokenize all the texts.
-    train_dataset, eval_dataset = preprocessing_datasets(raw_datasets, tokenizer, args.model_name)
+    train_dataset, eval_dataset = preprocessing_datasets(model, raw_datasets,
+                                                         tokenizer, args.model_name)
 
     # Data collator
     # This one will take care of randomly masking the tokens.
@@ -84,15 +86,12 @@ def main():
         args=training_args,
         train_dataset=train_dataset, 
         eval_dataset=eval_dataset, 
-        tokenizer=tokenizer,
         # Data collator will default to DataCollatorWithPadding, so we change it.
         data_collator=data_collator,
     )
 
     # Training
-    train_result = trainer.train()
-    metrics = train_result.metrics
-    trainer.log_metrics("train", metrics)
+    trainer.train()
 
 
 if __name__ == "__main__":

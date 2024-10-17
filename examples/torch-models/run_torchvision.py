@@ -45,13 +45,10 @@ def main(config):
     trainer = MerakTrainer(
         model=model,
         args=training_args,
-        train_dataset=dataset_train,
-        eval_dataset=dataset_val,
+        train_dataset=dataset_train, 
+        eval_dataset=dataset_val, 
     )
-    train_result = trainer.train()
-    metrics = train_result.metrics
-    print(metrics)
-    trainer.log_metrics("train", metrics)
+    trainer.train()
 
 
 if __name__ == '__main__':
@@ -63,7 +60,7 @@ if __name__ == '__main__':
     hfparser = HfArgumentParser(MerakArguments)
     parser = parse_option(hfparser)
     training_args, args = parser.parse_args_into_dataclasses()
-
+    
     # using data config from swin transformer
     config = get_config(args)
     main(config)

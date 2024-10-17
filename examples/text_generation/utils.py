@@ -77,7 +77,7 @@ def check_cache(cache_dir):
             exit_file = True
             break
     return exit_file
-
+            
 
 def create_tokenizer(cache_dir, model_name, config):
     tokenizer_kwargs = {
@@ -86,17 +86,17 @@ def create_tokenizer(cache_dir, model_name, config):
         "revision": 'main',
         "use_auth_token": None,
     }
-
+    
     # Only rank 0 to download files
     if dist.get_rank() == 0:
-        tokenizer = AutoTokenizer.from_pretrained(model_name,
-            local_files_only=check_cache(cache_dir),
+        tokenizer = AutoTokenizer.from_pretrained(model_name, 
+            local_files_only=check_cache(cache_dir), 
             config=config,
             **tokenizer_kwargs)
     dist.barrier()
     if dist.get_rank() != 0:
-        tokenizer = AutoTokenizer.from_pretrained(model_name,
-            local_files_only=check_cache(cache_dir),
+        tokenizer = AutoTokenizer.from_pretrained(model_name, 
+            local_files_only=check_cache(cache_dir), 
             config=config,
             **tokenizer_kwargs)
     dist.barrier()

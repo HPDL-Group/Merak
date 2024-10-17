@@ -21,7 +21,7 @@ limitations under the License.
 This demonstrates how to perform lora using Merak.
 
 ```bash
-python -m torch.distributed.launch --nproc_per_node=4  run_vit.py \
+torchrun --nproc-per-node=4  run_vit.py \
                 --per_device_train_batch_size 128 --gradient_accumulation_steps 4  \
                 --cache-dir ./vit_cache \
                 --output_dir ./output --remove_unused_columns False \
@@ -32,3 +32,5 @@ python -m torch.distributed.launch --nproc_per_node=4  run_vit.py \
                 --save --save_steps 100 --seed 42 \
                 --resume_from_checkpoint ./output/ckpt --lora_config ./lora_config.json
 ```
+
+

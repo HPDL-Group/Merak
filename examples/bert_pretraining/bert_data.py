@@ -23,7 +23,7 @@ import h5py
 import numpy as np
 import random
 import os
-from Merak import mpu
+from Merak.core import mpu
 import json
 
 def get_data_files(args, seed):
@@ -78,7 +78,7 @@ class HDF5Dataset(data.Dataset):
             self.get_total_samples()
 
 
-
+            
     def __getitem__(self, index):
         # get data
         worker_id = torch.utils.data.get_worker_info().id
@@ -104,18 +104,18 @@ class HDF5Dataset(data.Dataset):
             index = padded_mask_indices[0].item()
         masked_lm_labels[masked_lm_positions[:index]] = masked_lm_ids[:index]
 
-        return {"input_ids":input_ids, "attention_mask": input_mask, "token_type_ids": segment_ids,
+        return {"input_ids":input_ids, "attention_mask": input_mask, "token_type_ids": segment_ids, 
                 "masked_lm_labels": masked_lm_labels, "next_sentence_labels": next_sentence_labels}
 
     def __len__(self):
         return self.total_samples
-
+    
     def _add_data_infos(self, file_path):
         with h5py.File(file_path) as h5_file:
             idx = -1
             self.data_info.append({'file_path': file_path, 'length': len(np.asarray(h5_file["input_ids"][:])), 'cache_idx': idx})
         self.get_total_samples()
-
+                
 
     def _load_data(self, file_path):
         """Load data to the cache given the file

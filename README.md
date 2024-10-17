@@ -16,6 +16,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
+<h1 align="center"><strong>Merak2 is coming!!</strong></h1>
+
+# New Futures
+-   Supports the latest version of Transformers and PyTorch, compatible with Transformers > 4.22.0 and PyTorch >= 1.13.
+-   More transformers models supported, part of [supported models](https://github.com/huggingface/transformers/blob/3f06f95ebe617b192251ef756518690f5bc7ff76/src/transformers/utils/fx.py#L122C1-L123C1).
+-   More convenient API and easier-to-understand code structure.
+-   More 3D model training/inference building methods, supporting [torch.fx](https://pytorch.org/docs/stable/fx.html) and [torch.dynamo](https://pytorch.org/docs/stable/torch.compiler_dynamo_overview.html) for tracing computation graphs.
+
 # Merak: fast and easy to use 3D parallelism DNN training framework
 
 [Merak](https://ieeexplore.ieee.org/document/10049507) is a distributed deep learning training framework with automated 3D parallelism. It can automatically slice, allocate and train a DNN model, making the development of giant model fast and easy. The current version of Merak is adapted to PyTorch.
@@ -56,13 +64,17 @@ Example usage (see the Merak [examples](https://github.com/HPDL-Group/Merak/tree
 
 ```Python
 import Merak
-from Merak import MerakArguments, MerakTrainer
+from Merak import MerakArguments, MerakTrainer, init_empty_weights
 
 # Init Merak with degrees of 3D parallelism.
 dp = 2
 tp = 1
 pp = 2
 Merak.init(dp, tp, pp)
+
+# if LLM init
+with init_empty_weights():
+  model = ...
 
 # Set training args MerakArgument.
 training_args = MerakArguments(

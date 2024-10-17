@@ -28,12 +28,12 @@ This example show case of ViT model. Model is from `transformers`, but cannot be
 Run it according to following bash:
 
 ```bash
-python -m torch.distributed.launch --nproc_per_node=4  run_vit.py \
-                --per_device_train_batch_size 4 --gradient_accumulation_steps 4  \
-                --cache-dir ./vit \
-                --data-files /ssd/datasets/imagenet/pytorch/ \
-                --seq_length 1024 --output_dir ./output --remove_unused_columns False \
-                --input_name "pixel_values"
+torchrun --nproc_per_node=4  run_vit.py \
+         --per_device_train_batch_size 4 --gradient_accumulation_steps 4  \
+         --cache-dir ./vit \
+         --data-files /path/to/imagenet \
+         --seq_length 1024 --output_dir ./output --remove_unused_columns False \
+         --input_name "pixel_values"
 ```
 
 Code is based on [transformers](https://github.com/huggingface/transformers/tree/master/examples/pytorch/image-classification) repository.

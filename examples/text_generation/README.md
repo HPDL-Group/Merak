@@ -21,13 +21,16 @@ limitations under the License.
 This demonstrates how to perform text generation using 3D parallelism in Merak.
 
 ```bash
-python -um torch.distributed.launch --nproc_per_node=4 \
+torchrun --nproc_per_node=4 \
                run_gpt_text_generation.py \
                --model-name gpt2 \
                --cache-dir ./cache/gpt2-110M \
                --output_dir ./output \
                --per_device_train_batch_size 1 --gradient_accumulation_steps 1 \
-               --resume_from_checkpoint output/merak_to_merak_2 \
+               --resume_from_checkpoint output/transformers_model \
                --activation_checkpointing false --checkpoint_num_layers 0 \
-               --return_logits true --no_tie_modules true --text_generation true --seed 42
+               --return_logits true --no_tie_modules true --text_generation true --seed 42 \
+               --split_method layer_split
 ```
+
+

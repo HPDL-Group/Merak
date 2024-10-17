@@ -17,7 +17,8 @@
 
 # using our distributed trainer
 import Merak
-from Merak import MerakArguments, text_generation_pipeline, print_rank_0
+from Merak import MerakArguments, print_rank_0
+from Merak.inference import text_generation_pipeline
 from utils import create_tokenizer
 from config import load_config
 
@@ -83,7 +84,6 @@ def main():
     pipeline = text_generation_pipeline(
         model=model,
         args=training_args,
-        train_dataset=None,
         tokenizer=tokenizer,
     )
 

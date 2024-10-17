@@ -36,13 +36,12 @@ Running according to following bash:
 
 ```bash
 export TOKENIZERS_PARALLELISM=false
-python -m torch.distributed.launch --nproc_per_node=4 \
-               run_bert.py \
-               --model-name bert-large \
-               --data-files "/path/to/hdf5_file/" \
-               --output_dir ./output \
-               --per_device_train_batch_size 4 --gradient_accumulation_steps 16 \
-               --logging_steps 10 \
-               --input_name input_ids attention_mask token_type_ids \
-               --dataloader_num_workers 2
+torchrun --nproc_per_node=4 run_bert.py \
+         --model-name bert-large \
+         --data-files "/path/to/hdf5_file/" \
+         --output_dir ./output \
+         --per_device_train_batch_size 4 --gradient_accumulation_steps 16 \
+         --logging_steps 10 \
+         --input_name input_ids attention_mask token_type_ids \
+         --dataloader_num_workers 2
 ```
