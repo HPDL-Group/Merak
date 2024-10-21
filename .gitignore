@@ -28,7 +28,6 @@ events.out.tfevents*
 model.ckpt*
 *.pbtxt
 *.pt
-checkpoint
 eval
 weight-decay
 events.out.*
