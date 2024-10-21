@@ -164,7 +164,7 @@ def get_grad_norm(gradients, parameters, norm_type=2, mpu=None):
 
         # Sum across all model parallel GPUs.
         if torch.cuda.is_available():
-            total_norm_cuda = torch.cuda.FloatTensor([float(total_norm)])
+            total_norm_cuda = torch.FloatTensor([float(total_norm)]).cuda()
         else:
             total_norm_cuda = torch.FloatTensor([float(total_norm)])
 

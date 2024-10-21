@@ -102,8 +102,6 @@ class MerakTrainer:
         self.collate_fn = data_collator
         self.leaf_modules = leaf_modules
 
-        super().__init__()
-
         self.optimizer = None
         self.lr_scheduler = None
         self.train_dataloader = None
@@ -111,6 +109,7 @@ class MerakTrainer:
         self.train_engine = None
         self.eval_engine = None
         self.input_to_stage_dic = None
+        self.dummy_inputs = None
 
         self._save_checkpoint = checkpoint.save_checkpoint
         self._rotate_checkpoints = checkpoint.rotate_checkpoints
@@ -121,8 +120,8 @@ class MerakTrainer:
         if hasattr(self.model, "config"):
             self.model_config = self.model.config
             mergeargs(self.args, self.model_config)
-        # else:
-        #     mergeargs(self.args, self.model)
+        else:
+            mergeargs(self.args, None)
         manual_set_args(self.args)
 
         self.peft_config = None
@@ -141,6 +140,7 @@ class MerakTrainer:
         self.train_params.train(self.train_dataloader)
         if self.eval_dataloader is not None:
             self.eval_params.eval(self.eval_dataloader)
+        self.get_dummy_inputs()
         # self.lr_scheduler = self.create_lr_scheduler()
         self.loss_fn = self.get_loss_fn() \
             if not self.args.parallel_vocab else self.get_vocab_loss_fn()
@@ -156,7 +156,8 @@ class MerakTrainer:
                 topology=get_topo(),
                 communicaiton_grid=get_grid(),
                 activation_checkpoint_func=checkpoint_func,
-                leaf_modules=self.leaf_modules
+                leaf_modules=self.leaf_modules,
+                dummy_inputs=self.dummy_inputs
             )
 
             self.input_to_stage_dic = self.model.input_to_stage_dic
@@ -264,6 +265,23 @@ class MerakTrainer:
                        scheduler_specific_kwargs=self.args.lr_scheduler_kwargs
                        )
         return self.lr_scheduler
+
+    def get_dummy_inputs(self):
+        if self.dummy_inputs is None:
+            self.iter_dataloader = iter(self.train_dataloader
+                if self.train_dataloader is not None else self.eval_dataloader
+            )
+            one_batch = next(self.iter_dataloader)
+            try:
+                if not isinstance(one_batch[-1][0], torch.Tensor):
+                    one_batch = one_batch[:-2]
+                else:
+                    one_batch.pop(-1)
+            except KeyError:
+                pass
+            self.dummy_inputs = one_batch
+            del self.train_dataloader
+            self.create_dataloader()
 
     def get_loss_fn(self) -> Callable:
         criterion = nn.CrossEntropyLoss()

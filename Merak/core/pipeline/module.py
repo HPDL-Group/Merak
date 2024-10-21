@@ -71,6 +71,7 @@ class PipelineModule(nn.Module):
             communicaiton_grid: Optional[Callable] = None,
             activation_checkpoint_func: Callable = checkpoint_func,
             leaf_modules: list = (),
+            dummy_inputs: Optional[Dict[str, torch.Tensor]] = None
         ):
         """Modules to be parallelized with pipeline parallelism.
 
@@ -127,6 +128,7 @@ class PipelineModule(nn.Module):
         self.base_seed = base_seed
         self._topo = topology
         self._grid = communicaiton_grid
+        self.dummy_inputs = dummy_inputs
         if dist.get_rank() == 0:
             try:
                 seed_str = self.seed_fn.__name__
@@ -207,7 +209,7 @@ class PipelineModule(nn.Module):
         
         self._build(tie_dims, input_to_shard_dic)
 
-        if model.config.model_type == "gpt2":
+        if hasattr(model, 'config') and model.config.model_type == "gpt2":
             assert mpu.get_model_parallel_world_size() == 1, (
                   "Currently gpt model not supported in tensor parallel"
                 )
@@ -223,7 +225,9 @@ class PipelineModule(nn.Module):
             leaf_modules: List[nn.Module]
         ) -> Tuple[Union[List[torch.fx.GraphModule], Dict[str, int]]]:
         model, layers, input_to_shard = convert_to_sequential(
-            module, self.args,
+            module,
+            self.args,
+            self.dummy_inputs,
             extra_leaf_modules=leaf_modules,
         )
         del model

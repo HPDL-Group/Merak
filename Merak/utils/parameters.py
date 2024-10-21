@@ -45,14 +45,16 @@ class BaseParams:
         self.step: int = 0
 
     def train(self, dataloader: torch.utils.data.DataLoader):
-        if self.args.max_steps < 0:
-            self.max_steps = math.ceil(
-                self.train_epochs * len(dataloader) // (
-                    self.total_batch_size * mpu.get_data_parallel_world_size()
-                )
+        total_steps = math.ceil(
+                self.train_epochs * len(dataloader) // (self.total_batch_size)
             )
-        if self.args.eval_iters < 0:
-            self.eval_step = len(dataloader) // self.gas
+        if self.args.max_steps < 0:
+            self.max_steps = total_steps
+        elif self.args.max_steps > total_steps:
+            self.train_epochs = (
+                self.args.max_steps * self.total_batch_size
+            ) // len(dataloader)
+
         self.num_train_samples = self.max_steps * self.total_batch_size
         self.num_steps_per_epoch = self.max_steps // self.train_epochs
 

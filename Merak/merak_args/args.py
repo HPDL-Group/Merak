@@ -20,7 +20,7 @@ import sys
 import time
 import json
 from dataclasses import dataclass, field
-from typing import Any, Union, List, Optional
+from typing import Any, Union, List, Optional, Dict
 import torch
 from transformers import TrainingArguments, PretrainedConfig
 from transformers.file_utils import (
@@ -118,7 +118,7 @@ class MerakArguments(TrainingArguments):
         },
     )
     split_method: str = field(
-        default="min_deps",
+        default="farthest_min_deps",
         metadata={
             "help": "Possible choices are graph partion method "
                     "as strings: 'farthest_min_deps','layer_split',"
@@ -584,8 +584,10 @@ def mergeargs(training_args: MerakArguments, model_config: Union[PretrainedConfi
         if hasattr(model_config, 'encoder_layers'):
             training_args.num_layers = model_config.decoder_layers + \
                                         model_config.encoder_layers
-            training_args.num_heads = [model_config.decoder_attention_heads,
-                                   model_config.encoder_attention_heads]
+            training_args.num_heads = [
+                model_config.decoder_attention_heads,
+                model_config.encoder_attention_heads
+            ]
         else:
             training_args.num_layers = model_config.decoder_layers
             training_args.num_heads = model_config.decoder_attention_heads
@@ -616,8 +618,10 @@ def mergeargs(training_args: MerakArguments, model_config: Union[PretrainedConfi
     if training_args.shard_count is None:
         if isinstance(training_args.num_layers, dict):
             training_args.shard_count = sum(list(training_args.num_layers.values())) * 2 + 4
-        else:
+        elif training_args.num_layers is not None:
             training_args.shard_count = training_args.num_layers*2 + 4
+        else:
+            training_args.shard_count = 3
 
     if training_args.train_schedule == 'shifted_critical_path':
         training_args.train_schedule = 'full_critical_path_1f1b'

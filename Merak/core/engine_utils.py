@@ -38,6 +38,8 @@ ID_TO_DTYPE = [
     torch.bool
     ]
 DTYPE_TO_ID = {dtype: id_ for id_, dtype in enumerate(ID_TO_DTYPE)}
+mem_alloced = 0
+mem_cached = 0
 
 def split_half_float_double(tensors: torch.Tensor) -> List[Tuple[torch.dtype, List[torch.Tensor]]]:
     dtypes = [

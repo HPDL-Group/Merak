@@ -223,7 +223,6 @@ def split_module(
             partitions[partition_name] = partition = Partition(partition_name)
 
         partition.node_names.append(node.name)
-        partition_name = partition_name
         node._fx_partition = partition_name
 
         torch.fx.graph.map_arg(

@@ -75,8 +75,6 @@ class CommunicationEngine:
             pipeline,
         ):
 
-        super().__init__()
-
         self.args = pipeline.args
         self.device = pipeline.device
         self.timers = pipeline.timers
@@ -634,8 +632,6 @@ class NetCalculationEngine:
             loss_fn: Callable
         ):
 
-        super().__init__()
-
         self.args = pipeline.args
         self.timers = pipeline.timers
         self.device = pipeline.device
@@ -1072,8 +1068,6 @@ class PipelineEngine:
             dataloader: torch.utils.data.DataLoader = None,
             loss_fn: Optional[Callable] = None,
         ):
-
-        super().__init__()
 
         self.module = model
         self.args = args

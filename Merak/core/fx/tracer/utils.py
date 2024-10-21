@@ -77,7 +77,7 @@ def _generate_dummy_input(args: MerakArguments, model: torch.nn.Module) -> Dict[
         else list(encoder_shape)
     )
     model_class = model.__class__
-    device = model.device
+    device = 'cpu' #model.device
     # device = 'cpu'
     inputs_dict = dict()
 

@@ -42,6 +42,7 @@ from .utils import (
 def convert_to_sequential(
         model: Module,
         args: MerakArguments,
+        dummy_inputs: Optional[Dict[str, torch.Tensor]] = None,
         extra_leaf_modules: Tuple[Module] = ()
     ) -> Tuple[Module, List[GraphModule], Dict[str, int]]:
     
@@ -51,12 +52,12 @@ def convert_to_sequential(
 
     assert args.trace_method in ['fx', 'dynamo']
 
-    if args.trace_method == 'fx':
-        new_suported_models = tf_suported_models + (args.trace_model,)
-        extra_leaf_modules = (T5LayerNorm,) + extra_leaf_modules
+    new_suported_models = tf_suported_models + (args.trace_model,)
+    extra_leaf_modules = (T5LayerNorm,) + extra_leaf_modules
 
-        if model.__class__.__name__ in new_suported_models:
-
+    if model.__class__.__name__ in new_suported_models:
+        dummy_inputs = _generate_dummy_input(args, model)
+        if args.trace_method == 'fx':
             traced = tf_symbolic_trace(
                 model,
                 input_names=args.input_names,
@@ -64,8 +65,9 @@ def convert_to_sequential(
             )
             # 用于修改trace后的常数
             traced = _split_attr_values(model, traced, args)
-            dummy_inputs = args.input_names
-        else:
+    else:
+        dummy_inputs = dummy_inputs
+        if args.trace_method == 'fx':
             if isinstance(extra_leaf_modules, list):
                 extra_leaf_modules = tuple(extra_leaf_modules)
             elif isinstance(extra_leaf_modules, nn.Module):
@@ -77,9 +79,9 @@ def convert_to_sequential(
             tracer = LayerProxyTracer(leaf_modules)
             traced_graph = tracer.trace(model)
             traced = torch.fx.GraphModule(model, traced_graph)
-            dummy_inputs = _generate_dummy_input(args, model)
-    elif args.trace_method == 'dynamo':
-        traced, dummy_inputs = dynamo_trace(model, args)
+
+    if args.trace_method == 'dynamo':
+        traced = dynamo_trace(model, dummy_inputs)
 
     ## test code
     # print_rank_0(traced.graph)
