@@ -118,7 +118,7 @@ class MerakArguments(TrainingArguments):
         },
     )
     split_method: str = field(
-        default="farthest_min_deps",
+        default="nearest_min_deps",
         metadata={
             "help": "Possible choices are graph partion method "
                     "as strings: 'farthest_min_deps','layer_split',"
@@ -530,11 +530,18 @@ class MerakArguments(TrainingArguments):
     @cached_property
     @torch_only_method
     def _setup_devices(self) -> "torch.device":
+
+        if os.getenv("LOCAL_RANK"):
+            self.local_rank = int(os.environ["LOCAL_RANK"])
+        elif os.getenv("SLURM_LOCALID"):
+            self.local_rank = int(os.environ["SLURM_LOCALID"])
+        else:
+            raise ValueError("Please set env LOCAL_RANK or SLURM_LOCALID")
         
-        if self.use_cpu:
+        if not torch.cuda.is_available():
+            self.use_cpu = True
             device = torch.device('cpu')
         else:
-            self.local_rank = int(os.environ["LOCAL_RANK"])
             assert self.local_rank != -1, \
                 'only support distributed training/evaluation for now'
             device = torch.device("cuda", self.local_rank)

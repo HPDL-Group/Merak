@@ -19,6 +19,7 @@ import torch
 import math
 from ..merak_args import MerakArguments
 from ..core import mpu
+from ..core.printer import logger
 
 __all__ = ['BaseParams']
 
@@ -87,3 +88,14 @@ class BaseParams:
                 self.global_steps = iteration
 
         return epochs_trained
+
+    def logging(self):
+        if torch.distributed.get_rank() == 0:
+            logger.info("***** Running training *****")
+            logger.info(f"  Num examples = {self.num_train_samples}")
+            logger.info(f"  Num Epochs = {self.train_epochs}")
+            logger.info(f"  Instantaneous micro batch size per device = {self.mbs}")
+            logger.info(f"  Gradient Accumulation steps = {self.gas}")
+            logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) "
+                        f"= {self.total_batch_size}")
+            logger.info(f"  Total optimization steps = {self.max_steps}")

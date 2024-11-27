@@ -16,13 +16,15 @@
 # https://github.com/NVIDIA/Megatron-LM/blob/806422e5ec35c27b027dbb413b05e27b6590dc56/megatron/mpu/mappings.py
 
 import torch
+import torch.distributed as dist
 
+from Merak import get_grid
 from .initialize import (
     get_model_parallel_group,
     get_model_parallel_world_size,
     get_model_parallel_rank
 )
-from .utils import split_tensor_along_last_dim, divide
+from .utils import split_tensor_along_last_dim, split_tensor_along_channel_dim
 
 
 def _reduce(input_):
@@ -32,6 +34,8 @@ def _reduce(input_):
         return input_
 
     # All-reduce.
+    if not input_.is_contiguous():
+        input_ = input_.contiguous()
     torch.distributed.all_reduce(input_, group=get_model_parallel_group())
 
     return input_
@@ -55,6 +59,24 @@ def _split(input_):
 
     return output
 
+def _channels_split(input_):
+    """Split the tensor along its last dimension and keep the
+    corresponding slice."""
+
+    world_size = get_model_parallel_world_size()
+    # Bypass the function if we are using only 1 GPU.
+    if world_size==1:
+        return input_
+
+    # Split along last dimension.
+    input_list, size_list = split_tensor_along_channel_dim(input_, world_size)
+
+    # Note: torch.split does not create contiguous tensors by default.
+    rank = get_model_parallel_rank()
+    output = input_list[rank].contiguous()
+    del input_list
+
+    return output, size_list
 
 def _gather(input_):
     """Gather tensors and concatinate along the last dimension."""
@@ -75,6 +97,45 @@ def _gather(input_):
 
     # Note: torch.cat already creates a contiguous tensor.
     output = torch.cat(tensor_list, dim=last_dim).contiguous()
+
+    return output
+
+def _conv_gather(input_, size_list):
+    """Gather tensors and concatinate along the last dimension."""
+
+    world_size = get_model_parallel_world_size()
+    # Bypass the function if we are using only 1 GPU.
+    if world_size==1:
+        return input_
+
+    # Size and dimension.
+    device = input_.device
+    channel_dim = 1
+    rank = get_model_parallel_rank()
+
+    # tensor_list = [torch.empty_like(input_size) for _ in range(world_size)]
+    tensor_list = [torch.empty(size_list[i]).to(device) for i in range(world_size)]
+
+    if dist.get_backend() == 'nccl':
+        tensor_list[rank] = input_
+        torch.distributed.all_gather(tensor_list, input_,
+                                    group=get_model_parallel_group())
+
+        # Note: torch.cat already creates a contiguous tensor.
+        output = torch.cat(tensor_list, dim=channel_dim).contiguous()
+    else:
+        global_rank = get_grid().global_rank
+        # send all input_ to model rank 0, finnaly broadcast output
+        if rank == 0:
+            tensor_list[rank] = input_
+            for i in range(world_size-1):
+                dist.recv(tensor=tensor_list[i+1], src=global_rank+i+1)
+            output = torch.cat(tensor_list, dim=channel_dim).contiguous()
+            dist.broadcast(output, src=global_rank, group=get_model_parallel_group())
+        else:
+            dist.send(tensor=input_, dst=global_rank - rank)
+            output = torch.cat(tensor_list, dim=channel_dim).contiguous()
+            dist.broadcast(output, src=global_rank-rank, group=get_model_parallel_group())
 
     return output
 
@@ -281,6 +342,23 @@ class _ScatterToModelParallelRegion(torch.autograd.Function):
     def backward(ctx, grad_output):
         return _gather(grad_output)
 
+class _ScatterToConvParallelRegion(torch.autograd.Function):
+    """Split the input and keep only the corresponding chuck to the rank."""
+
+    @staticmethod
+    def symbolic(graph, input_):
+        output, _ = _channels_split(input_)
+        return output
+
+    @staticmethod
+    def forward(ctx, input_):
+        output, channel_list = _channels_split(input_)
+        ctx.channel_list = channel_list
+        return input_
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return _conv_gather(grad_output, ctx.channel_list)
 
 class _ReduceScatterFromModelParallelRegion(torch.autograd.Function):
     """Gather the input from model parallel region and concatinate."""
@@ -393,6 +471,8 @@ def reduce_from_model_parallel_region(input_):
 def scatter_to_model_parallel_region(input_):
     return _ScatterToModelParallelRegion.apply(input_)
 
+def scatter_to_conv_parallel_region(input_):
+    return _ScatterToConvParallelRegion.apply(input_)
 
 def gather_from_model_parallel_region(input_):
     return _GatherFromModelParallelRegion.apply(input_)

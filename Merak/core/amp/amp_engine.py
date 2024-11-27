@@ -17,7 +17,7 @@
 
 import torch
 import torch.distributed as dist
-from torch.distributed.distributed_c10d import _get_global_rank
+from torch.distributed.distributed_c10d import get_global_rank
 from typing import Union, Tuple, Dict
 
 from .fp16_optimizer import FP16_Optimizer
@@ -43,7 +43,7 @@ class MixedPrecisionConfig:
 
         self.global_rank = dist.get_rank()
         self.data_parallel_group = mpu.get_data_parallel_group()
-        self.broadcast_src_rank = _get_global_rank(
+        self.broadcast_src_rank = get_global_rank(
             mpu.get_data_parallel_group(), 0
         )
 
@@ -91,7 +91,6 @@ class MixedPrecisionConfig:
                 self.module, self.optimizer, **amp_params
             )
             self.optimizer.zero_grad()
-            self._broadcast_model()
         elif self.args.fp16:
             self.optimizer = self.configure_fp16_optimizer(self.optimizer) 
         else:

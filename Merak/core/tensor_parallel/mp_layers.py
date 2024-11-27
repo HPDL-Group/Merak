@@ -28,6 +28,47 @@ from .. import mpu
 ## 在使用AsyncRowParallelLinear 必须skip_bias_add
 ## AsyncColumnParallelLinear 不能skip_bias_add
 
+class ConvPara(torch.nn.Module):
+    def __init__(self,
+                 in_channels,
+                 out_channels,
+                 kernel_size,
+                 stride,
+                 padding,
+                 dilation = 1,
+                 groups = 1,
+                 bias=True,
+                 input_is_parallel=False,
+                 init_method=init.xavier_normal_,
+                 **kwargs
+        ):
+        super(ConvPara, self).__init__()
+        self.channels_conv2d = mpu.ColParallelConv2d(
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride,
+            padding,
+            dilation,
+            groups,
+            bias,
+            input_is_parallel,
+            init_method,
+            kwargs
+        )
+
+    @property
+    def weight(self):
+        return self.channels_conv2d.weight
+
+    @property
+    def bias(self):
+        return self.channels_conv2d.bias
+
+    def forward(self, x):
+        intermediate_parallel, _ = self.channels_conv2d(x)
+        return intermediate_parallel
+
 class ColPara(torch.nn.Module):
     def __init__(self, in_feature, out_feature, init_method,
                  bias=True, gather_output=False, need_permute=False):

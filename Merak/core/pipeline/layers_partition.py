@@ -158,7 +158,7 @@ class LayerPartition:
             parts = self.autopipe(input_to_shard_dic)
         else:
             raise NotImplementedError(
-                f'Partitioning method {method} \
-                    not implemented.')
+                f'Partitioning method {method} not implemented.'
+            )
         
         return parts

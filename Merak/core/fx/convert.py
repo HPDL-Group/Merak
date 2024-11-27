@@ -17,16 +17,20 @@
 
 import gc
 import torch
+import torch.distributed
 import torch.nn as nn
 
 from torch.nn import Module
 from torch.fx.graph_module import GraphModule
 from transformers.models.t5.modeling_t5 import T5LayerNorm
+from transformers import Conv1D
 from transformers.utils.fx import _SUPPORTED_MODELS as tf_suported_models
 from typing import Dict, List, Set, Any, Optional, Tuple
 
+from Merak import print_rank_0
 from Merak.merak_args import MerakArguments
 
+from .. import mpu
 from .tracer.utils import _generate_dummy_input
 from .tracer import (
     LayerProxyTracer,
@@ -53,7 +57,7 @@ def convert_to_sequential(
     assert args.trace_method in ['fx', 'dynamo']
 
     new_suported_models = tf_suported_models + (args.trace_model,)
-    extra_leaf_modules = (T5LayerNorm,) + extra_leaf_modules
+    extra_leaf_modules = (T5LayerNorm, Conv1D) + extra_leaf_modules
 
     if model.__class__.__name__ in new_suported_models:
         dummy_inputs = _generate_dummy_input(args, model)
@@ -64,7 +68,7 @@ def convert_to_sequential(
                 leaf_modules=extra_leaf_modules
             )
             # 用于修改trace后的常数
-            traced = _split_attr_values(model, traced, args)
+            # traced = _split_attr_values(model, traced, args)
     else:
         dummy_inputs = dummy_inputs
         if args.trace_method == 'fx':
@@ -81,6 +85,8 @@ def convert_to_sequential(
             traced = torch.fx.GraphModule(model, traced_graph)
 
     if args.trace_method == 'dynamo':
+        assert mpu.get_model_parallel_world_size() == 1, \
+            "Currently dynamo not supported tensor parallel"
         traced = dynamo_trace(model, dummy_inputs)
 
     ## test code

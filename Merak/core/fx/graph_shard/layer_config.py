@@ -19,6 +19,7 @@
 
 import torch
 import torch.fx
+import torch.distributed as dist
 import warnings
 
 from itertools import chain
@@ -246,7 +247,7 @@ def layer_config_mapping(
             break
 
     # assert len(split_points) == 0, f"Sharding is not complete. {split_points} not sharded"
-    if len(split_points) != 0:
+    if len(split_points) != 0 and dist.get_rank() == 0:
         warnings.warn(f"Sharding is not complete. {split_points} not sharded", Warning)
 
     return node_name_to_shard_id, extra_output, func_inputs, shard_output

@@ -17,9 +17,13 @@
 
 import torch
 
+import torch.distributed
 from torch.fx.node import Node
 from torch.fx.graph_module import GraphModule
 from typing import Dict, List, Set, Any, Optional, Type, Tuple
+
+from Merak.merak_args import get_args
+from Merak.core import mpu
 
 from .split_module import split_module, Partition
 
@@ -81,38 +85,66 @@ def nearest_dependency_mapping(
     return min_deps_partitions
 
 
-def inplace_patch(
+def correctness_check(
         gm: GraphModule,
         node: Node,
         nodes_so_far: List[str],
         node_name_to_shard_id: Dict[str, int],
         shard_id: int
     ):
-    # inplace operation process should hold in same shard, 
+    global flag
+    # nodes should stay with their inplace operation.
     # since Output 1 of CheckpointFunctionBackward is a view 
     # and its base or another view of its base has been modified inplace. 
     # This view is the output of a function that returns multiple views. 
     # Such functions do not allow the output views to be modified inplace. 
-    for arg in node.args:
-        if hasattr(gm, node.target):
-            mod = getattr(gm, node.target)
-        else:
-            submod = gm
-            prefix = node.target.split('.')
-            for item in prefix:
-                mod = getattr(submod, item, None)
-                submod = mod
-        if hasattr(mod, 'inplace'):
-            inplace_node_name = arg.name
-            inplace_shard_id = node_name_to_shard_id[inplace_node_name]
-            if shard_id > inplace_shard_id:
-                for node_name in reversed(nodes_so_far):
-                    pre_node_shard_id = node_name_to_shard_id[node_name]
-                    if pre_node_shard_id > inplace_shard_id:
-                        node_name_to_shard_id[node_name] = inplace_shard_id
-                    if node_name == inplace_node_name:
+    if node.op == 'call_module':
+        flag = False
+        for arg in node.args:
+            if hasattr(gm, node.target):
+                mod = getattr(gm, node.target)
+            else:
+                submod = gm
+                prefix = node.target.split('.')
+                for item in prefix:
+                    mod = getattr(submod, item, None)
+                    submod = mod
+            if hasattr(mod, 'inplace'):
+                inplace_node_name = arg.name
+                inplace_shard_id = node_name_to_shard_id[inplace_node_name]
+                if shard_id > inplace_shard_id:
+                    for node_name in reversed(nodes_so_far):
+                        pre_node_shard_id = node_name_to_shard_id[node_name]
+                        if pre_node_shard_id > inplace_shard_id:
+                            for node_name in reversed(nodes_so_far):
+                                if node_name != inplace_node_name:
+                                    node_name_to_shard_id[node_name] = inplace_shard_id
+                                else:
+                                    shard_id = inplace_shard_id
+                                    flag = True
+                                    return shard_id
+                if flag:
+                    break
+ 
+    # module's weight and bias nodes should be in the same shard.
+    if node.op == 'get_attr':
+        flag = False
+        if 'bias' in node.name:
+            module_name = node.name[:-4]
+            for node_name in reversed(nodes_so_far):
+                if module_name in node_name:
+                    module_weight_node_name = node_name
+                    module_weight_shard_id = node_name_to_shard_id[node_name]
+                    if shard_id > module_weight_shard_id:
+                        for node_name in reversed(nodes_so_far):
+                            if node_name != module_weight_node_name:
+                                node_name_to_shard_id[node_name] = module_weight_shard_id
+                            else:
+                                shard_id = module_weight_shard_id
+                                flag = True
+                                return shard_id
+                    if flag:
                         break
-                shard_id = inplace_shard_id
 
 
 def avgnode_split_pass(gm: torch.fx.GraphModule, shard_nums: int) -> Dict[str, int]:
@@ -127,8 +159,10 @@ def avgnode_split_pass(gm: torch.fx.GraphModule, shard_nums: int) -> Dict[str, i
     shard_id = 0
 
     for node in mod_graph.nodes:
-        if node.op == 'call_module':
-            inplace_patch(gm, node, nodes_so_far, node_name_to_shard_id, shard_id)
+        if node.op == 'call_module' or node.op == 'get_attr':
+            corrected_shard_id = correctness_check(gm, node, nodes_so_far, node_name_to_shard_id, shard_id)
+            if corrected_shard_id is not None:
+                shard_id = corrected_shard_id
         if node.op == 'placeholder':
             node_name_to_shard_id[node.name] = 0
             nodes_so_far.append(node.name)
@@ -149,10 +183,21 @@ def nearest_deps_split(
         model: torch.nn.Module
     ) -> Tuple[List[GraphModule], Dict[str, int]]:
     # mapping node name to shard id
+    # node_name_to_shard_id = avgnode_split_pass(
+    #     traced_graph_module, len(traced_graph_module.graph.nodes)
+    # )
+
+    # get shard nums
+    pipe = mpu.get_pipe_parallel_world_size()
+    args = get_args()
+    num_layers = args.num_layers
+    shard_nums = num_layers*pipe + 4
+
+    # mapping node name to shard id
     node_name_to_shard_id = avgnode_split_pass(
-        traced_graph_module, len(traced_graph_module.graph.nodes)
+        traced_graph_module, shard_nums
     )
-    
+
     # split graph
     module_list, func_inputs = split_module(
         traced_graph_module,

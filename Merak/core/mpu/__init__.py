@@ -42,6 +42,7 @@ from .layers import RowParallelLinear
 from .layers import VocabParallelEmbedding
 from .layers import RowSequenceParallel
 from .layers import ColumnSequenceParallel
+from .layers import ColParallelConv2d
 
 from .mappings import copy_to_model_parallel_region
 from .mappings import gather_from_model_parallel_region

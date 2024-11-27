@@ -18,8 +18,9 @@
 import os
 import socket
 import math
+import gc
 import torch
-import torchvision
+import torch.distributed as dist
 from datetime import datetime
 import torch.distributed as dist
 import torch.nn as nn
@@ -168,10 +169,13 @@ class MerakTrainer:
             setattr(self.model, 'input_to_stage_dic', self.input_to_stage_dic)
             setattr(self.model, '_grid', get_grid())
             assert mpu.get_pipe_parallel_world_size() * mpu.get_model_parallel_world_size() == 1
+        dist.barrier()
 
         if mpu.get_data_parallel_rank() == 0 and mpu.get_model_parallel_rank() == 0:
             if hasattr(self.model, 'stage_id'):
-                print(dist.get_rank(), self.model.stage_id, self.model)
+                for i in range(mpu.get_pipe_parallel_world_size()):
+                    if i == self.model.stage_id:
+                        print(dist.get_rank(), self.model.stage_id, self.model)
             else:
                 print(dist.get_rank(), self.model)
 
@@ -277,10 +281,11 @@ class MerakTrainer:
                     one_batch = one_batch[:-2]
                 else:
                     one_batch.pop(-1)
-            except KeyError:
+            except:
                 pass
             self.dummy_inputs = one_batch
-            del self.train_dataloader
+            del self.iter_dataloader, self.train_dataloader
+            gc.collect()
             self.create_dataloader()
 
     def get_loss_fn(self) -> Callable:
@@ -312,7 +317,7 @@ class MerakTrainer:
             labels: Union[torch.Tensor, tuple]
             ) -> torch.Tensor:
             if isinstance(outputs, tuple):
-                outputs = outputs[0][0]
+                outputs = outputs[0]
             if isinstance(labels, tuple):
                 labels = labels[0]
             losses = mpu.vocab_parallel_cross_entropy(outputs, labels)
@@ -378,8 +383,10 @@ class MerakTrainer:
             epochs_trained = 0
 
         if self.args.lora_config:
-            peft_config = self.train_engine.module._add_lora_layers(self.model_config)
-            _ = self.load_checkpoint(self.args.resume_from_checkpoint, peft_config=peft_config)
+            self.peft_config = self.train_engine.module._add_lora_layers(self.model_config)
+            _ = self.load_checkpoint(self.args.resume_from_checkpoint, peft_config=self.peft_config)
+
+        self.train_params.logging()
 
         for epoch in range(epochs_trained, math.ceil(self.args.num_train_epochs)):
             if dist.get_rank() == 0:
@@ -458,17 +465,14 @@ class MerakTrainer:
         self.eval_engine.reset_dataiterator(self.eval_dataloader)
 
     def save_checkpoint(self, best_model: Any = None):
-        peft_config = self.train_engine.peft_config \
-            if self.train_engine is not None else self.eval_engine.peft_config
-
         kwargs = {"best_model": best_model,
                   "args": self.args,
-                  "peft_config": peft_config
+                  "peft_config": self.peft_config
                   }
         self._save_checkpoint(self.train_params.global_steps,
                               self.train_engine.module,
-                              self.optimizer,
-                              self.lr_scheduler,
+                              self.train_engine.optimizer,
+                              self.train_engine.lr_scheduler,
                               **kwargs)
 
     def load_checkpoint(
@@ -479,7 +483,7 @@ class MerakTrainer:
         if os.path.exists(resume_from_checkpoint):
             if peft_config:
                 load_results = checkpoint.load_peft_model_state_dict(
-                    self.model,
+                    self.train_engine.module,
                     self.args,
                     peft_config,
                     verbose=True
@@ -488,8 +492,8 @@ class MerakTrainer:
             else:
                 iteration, state_dict, opt_state_dict = self._load_checkpoint(
                         self.train_engine.module,
-                        self.optimizer,
-                        self.lr_scheduler,
+                        self.train_engine.optimizer,
+                        self.train_engine.lr_scheduler,
                         self.args,
                         verbose=True
                 )

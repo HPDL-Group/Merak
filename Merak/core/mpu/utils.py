@@ -16,7 +16,19 @@
 # https://github.com/NVIDIA/Megatron-LM/blob/806422e5ec35c27b027dbb413b05e27b6590dc56/megatron/mpu/utils.py
 
 import torch
+import math
 
+def channels_uniform(num_items, num_parts):
+
+    base_value = num_items // num_parts
+    remainder = num_items % num_parts
+
+    result = [base_value] * num_parts
+
+    for i in range(remainder):
+        result[i] += 1
+
+    return result
 
 def ensure_divisibility(numerator, denominator):
     """Ensure that numerator is divisible by the denominator."""
@@ -51,6 +63,29 @@ def split_tensor_along_last_dim(tensor, num_partitions,
 
     return tensor_list
 
+def split_tensor_along_channel_dim(tensor, num_partitions,
+                                   contiguous_split_chunks=False):
+    """Split a tensor along its last dimension.
+    Arguments:
+        tensor: input tensor.
+        num_partitions: number of partitions to split the tensor
+        contiguous_split_chunks: If True, make each chunk contiguous
+                                 in memory.
+    """
+    # Get the size and dimension.
+    channel_dim = 1
+    # channel_dim_size = math.ceil(tensor.size()[channel_dim] / num_partitions)
+    channel_dim_size = channels_uniform(tensor.size()[channel_dim], num_partitions)
+    # Split.
+    tensor_list = torch.split(tensor, channel_dim_size, dim=channel_dim)
+    size_list = []
+    for i in range(num_partitions):
+        size_list.append(tensor_list[i].size())
+    # Note: torch.split does not create contiguous tensors by default.
+    if contiguous_split_chunks:
+        return tuple(chunk.contiguous() for chunk in tensor_list)
+
+    return tensor_list, size_list
 
 class VocabUtility:
     """Split the vocabulary into `world_size` chunks amd return the

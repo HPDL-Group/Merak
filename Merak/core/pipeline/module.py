@@ -19,6 +19,7 @@
 
 import collections
 import os
+import gc
 import re as regex
 from typing import Optional, List, Tuple, Callable, Union, Dict
 
@@ -26,7 +27,8 @@ from functools import partial
 import torch
 import torch.nn as nn
 import torch.distributed as dist
-from torch.distributed.distributed_c10d import _get_global_rank
+from torch.distributed.distributed_c10d import get_global_rank
+from torch.cuda.amp import autocast
 from transformers import PretrainedConfig
 
 # from .. import print_rank_0
@@ -38,7 +40,7 @@ from ..recompute.checkpointing import checkpoint as checkpoint_func
 from ..recompute.checkpointing import get_rng_tracker
 from ..fx import add_inputs_to_shards, convert_to_sequential
 from ..mpu.layers import VocabParallelEmbedding
-from ..tensor_parallel import EmbeddingProxy, LinearProxy, ModuleRebuild
+from ..tensor_parallel import ModuleRebuild
 from ..finetuning.lora import (
     LoraConfig, _prepare_lora_config,
     mark_only_lora_as_trainable, _find_and_replace
@@ -143,7 +145,7 @@ class PipelineModule(nn.Module):
         self.world_group = dist.new_group(ranks=range(dist.get_world_size()))
         self.global_rank = dist.get_rank(group=self.world_group)
         self.world_size = dist.get_world_size(group=self.world_group)
-        self.local_rank = int(os.environ.get("LOCAL_RANK", None))
+        self.local_rank = args.local_rank
         assert self.local_rank != None
 
         self.sequence_parallel = self.args.sequence_parallel
@@ -162,13 +164,16 @@ class PipelineModule(nn.Module):
 
         # trace model
         model_class = model.__class__
+        if self.args.fp16:
+            model = model.half()
+        rebuild_module = ModuleRebuild(self.args, model, model_class)
         layers, input_to_shard_dic = self._traced_module(model, leaf_modules)
 
         # set tie module
         tie_dims = self._set_tie_dim(model)
 
         # rebuild module for tensor parallel
-        rebuild_module = ModuleRebuild(self.args, layers, model_class)
+        # rebuild_module = ModuleRebuild(self.args, layers, model_class)
         if dist.get_rank() == 0:
             print(layers)
 
@@ -209,15 +214,11 @@ class PipelineModule(nn.Module):
         
         self._build(tie_dims, input_to_shard_dic)
 
-        if hasattr(model, 'config') and model.config.model_type == "gpt2":
-            assert mpu.get_model_parallel_world_size() == 1, (
-                  "Currently gpt model not supported in tensor parallel"
-                )
-
         rebuild_module.recover_module(self)
         rebuild_module.vocab_parallel(emb_dim=tie_dims)
 
         del model, layers
+        gc.collect()
 
     def _traced_module(
             self,
@@ -260,14 +261,11 @@ class PipelineModule(nn.Module):
         for layer_idx, layer in enumerate(specs):
             for m in layer.modules():
                 if hasattr(m, 'weight'):
-                    if isinstance(m, (EmbeddingProxy, LinearProxy)):
-                        weight_shape = m.weight_shape
-                    else:
-                        try:
-                            weight_shape = m.weight.shape
-                        except AttributeError:
-                            # loss module pass
-                            continue
+                    try:
+                        weight_shape = m.weight.shape
+                    except AttributeError:
+                        # loss module pass
+                        continue
                     if weight_shape in tie_dims:
                         self.tied_stage[
                             str(weight_shape).replace(".", "_")].add(
@@ -343,7 +341,7 @@ class PipelineModule(nn.Module):
                 return False
             return True
 
-        broadcast_src_rank = _get_global_rank(mpu.get_data_parallel_group(), 0)
+        broadcast_src_rank = get_global_rank(mpu.get_data_parallel_group(), 0)
 
         for p in self.parameters():
             if torch.is_tensor(p) and is_replicated(p):
@@ -352,6 +350,8 @@ class PipelineModule(nn.Module):
                                group=mpu.get_data_parallel_group())
 
     def configure_distributed_model(self, device: torch.device):
+        if self.args.half_precision_backend == "apex":
+            return
 
         if self.args.fp16:
             shuold_dtype = torch.half
@@ -401,10 +401,13 @@ class PipelineModule(nn.Module):
                             self.seed_fn(new_seed)
                         else:
                             module_utils.set_random_seed(new_seed)
-                    if isinstance(inputs, tuple):
-                        inputs = layer(*inputs)
-                    else:
-                        inputs = layer(inputs)
+                    with autocast(
+                        enabled=True if self.args.half_precision_backend == "cuda_amp" else False
+                    ):
+                        if isinstance(inputs, tuple):
+                            inputs = layer(*inputs)
+                        else:
+                            inputs = layer(inputs)
                 return inputs
 
             return exec_func
@@ -506,6 +509,7 @@ class PipelineModule(nn.Module):
 
         # Print some information on the partitioning.
         if self.global_rank == 0:
+            print(self.parts)
             for stage in range(num_stages):
                 start = self.parts[stage]
                 stop = self.parts[stage + 1]
@@ -547,10 +551,7 @@ class PipelineModule(nn.Module):
     def _set_tie_dim(self, model: nn.Module) -> int:
         emb_dim = set()
         def add_dim(emb_dim, m):
-            if isinstance(m, (EmbeddingProxy, LinearProxy)):
-                emb_dim.add(m.weight_shape)
-            else:
-                emb_dim.add(m.weight.shape)
+            emb_dim.add(m.weight.shape)
         if hasattr(model, 'config'):
             if model.config.tie_word_embeddings:
                 for m in model.modules():

@@ -18,6 +18,7 @@
 import inspect
 import torch
 import copy
+import math
 
 from torch.fx import Graph
 from transformers import logging
@@ -28,11 +29,27 @@ from Merak.core.printer import logger
 
 logger = logging.get_logger(__name__)
 
+class MerakTracer(HFTracer):
+    def __init__(self, autowrap_modules=(math,), autowrap_functions=()):
+        super().__init__()
+        self.leaf_modules = autowrap_functions
+
+    def is_manual_leaf_module(self, m):
+        for i in self.leaf_modules:
+            if isinstance(m, i):
+                return True
+        return False
+
+    def is_leaf_module(self, m: torch.nn.Module, module_qualified_name: str) -> bool:
+        return (not self._stateless_mod_instanciation_depends_on_proxies(m)) and \
+                super().is_leaf_module(
+                    m, module_qualified_name
+                ) or self.is_manual_leaf_module(m)
 
 def tf_symbolic_trace(
     model: torch.nn.Module,
     input_names: List[str] = None,
-    tracer_cls=HFTracer,
+    tracer_cls=MerakTracer,
     leaf_modules=(),
 ) -> Graph:
     """

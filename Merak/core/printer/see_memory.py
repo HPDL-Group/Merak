@@ -23,11 +23,11 @@ from typing import Optional, List
 
 try:
     import torch_ft
-    MALLOC = True
+    USE_CPU = True
 except ModuleNotFoundError:
-    MALLOC = False
+    USE_CPU = False
 
-if MALLOC:
+if USE_CPU:
     if hasattr(torch_ft.utils, "dsp_mem_used"):
         torch_memory_reserved = torch_ft.utils.dsp_mem_used
     else:
@@ -66,7 +66,7 @@ def see_memory_usage(
     # the correct RAM reports
     gc.collect()
     global peak_memory
-    if MALLOC:
+    if USE_CPU:
         max_ma = round(torch_max_memory_reserved() / (1024 * 1024),2)
     else:
         max_ma = round(torch.cuda.max_memory_allocated() / (1024 * 1024),2)
@@ -91,6 +91,6 @@ def see_memory_usage(
     # torch.distributed.barrier(group=group)
     # get the peak memory to report correct data, so reset the counter for the
     # next call
-    if not MALLOC:
+    if not USE_CPU:
         if hasattr(torch.cuda, "reset_peak_memory_stats"):  # pytorch 1.4+
             torch.cuda.reset_peak_memory_stats()

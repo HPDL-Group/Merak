@@ -24,19 +24,15 @@ from typing import List, Tuple, Callable
 from transformers.pytorch_utils import Conv1D
 
 from Merak import print_rank_0
-from .layer_proxy import LinearProxy, EmbeddingProxy, Conv1DProxy
 from .mp_attrs import set_mp_attr, mp_is_setted, set_tp_layer_lists
 from .utils import (
     tp_overlapping_available, init_method_normal,
-    reset_module_tensor
+    reset_module_tensor, scaled_init_method_normal
 )
+from .mp_layers import ColPara, RowPara, ConvPara
 from .transformer_blocks import PipedGPT2Model, PipedGPT2Block
 from .. import mpu
 from ..pipeline.module_utils import set_random_seed
-
-torch._dynamo.allow_in_graph(LinearProxy)
-torch._dynamo.allow_in_graph(EmbeddingProxy)
-torch._dynamo.allow_in_graph(Conv1DProxy)
 
 class ModuleRebuild:
     '''
@@ -56,34 +52,10 @@ class ModuleRebuild:
         set_random_seed(self.args.seed)
         if self.args.tp_overlapping_level > 1:
             self.overlap_init()
-        self.replace_module()
+        # self.replace_module()
         # self.model = self.model.to(self.device)
         if self.mp_size > 1:
             self._set_attr()
-
-    def replace_module(self):
-        def build_module(model):
-            for n, module in model.named_children():
-                # if n in ['c_attn', 'c_proj', 'c_fc']:
-                #     setattr(model, n,
-                #             Conv1DProxy(module.weight.size()[1],
-                #                         module.weight.size()[0],
-                #                         ))
-                if isinstance(module, nn.Linear):
-                    setattr(model, n,
-                            LinearProxy(module.in_features,
-                                        module.out_features,
-                                        isinstance(module.bias, torch.Tensor)))
-                if isinstance(module, nn.Embedding):
-                    setattr(model, n,
-                            EmbeddingProxy(module.num_embeddings,
-                                           module.embedding_dim))
-                if len(list(module.children())) > 0:
-                    ## compound module, go inside it
-                    build_module(module)
-        for model in self.model:
-            build_module(model)
-        # build_module(self.model)
 
     def _set_attr(self):
         if not mp_is_setted():
@@ -100,22 +72,50 @@ class ModuleRebuild:
             set_mp_attr(model, self.mp_size)
         # self.model = set_mp_attr(self.model, self.mp_size)
 
+    def build_parallel_layers(self, n, module, init_args):
+        if isinstance(module, nn.Linear) or n in ['c_attn', 'c_proj', 'c_fc']:
+            _bias = module.bias if isinstance(module.bias, bool) else isinstance(module.bias, torch.Tensor)
+            if not hasattr(module, 'mp_attr'):
+                return module
+            elif module.mp_attr.startswith('row'):
+                module_args = [module.in_features * self.mp_size, module.out_features]
+                init_method = scaled_init_method_normal(*init_args)
+                if module.mp_attr == 'row_mlp':
+                    return RowPara(module_args[0], module_args[1],
+                                init_method, bias=_bias)
+                else:
+                    return RowPara(module_args[0], module_args[1],
+                                init_method, bias=_bias, need_permute=False)
+            elif module.mp_attr.startswith('col'):
+                module_args = [module.in_features, module.out_features * self.mp_size]
+                init_method = init_method_normal(init_args[0])
+                if module.mp_attr == 'col_mlp':
+                    return ColPara(module_args[0], module_args[1],
+                                init_method, bias=_bias)
+                else:
+                    return ColPara(module_args[0], module_args[1],
+                                init_method, bias=_bias, need_permute=False)
+        elif isinstance(module, nn.Conv2d):
+            module_args = module.__dict__
+            if not hasattr(module, 'mp_attr'):
+                return module
+            return ConvPara(**module_args)
+        else:
+            return None
+
     def recover_module(self, module):
         self.model = module
-        def build_module(model, proxy_layer, init_args):
+        def build_module(model, init_args):
             for n, module in model.named_children():
-                if isinstance(module, proxy_layer):
-                    setattr(model, n, module.build(init_args, self.args.fp16))
+                # if isinstance(module, layer_cls):
+                parallel_layer = self.build_parallel_layers(n, module, init_args)
+                if parallel_layer is not None:
+                    setattr(model, n, parallel_layer)
                 if len(list(module.children())) > 0:
-                    ## compound module, go inside it
-                    build_module(module, proxy_layer, init_args)
-        
-        build_module(self.model, Conv1DProxy,
-                     (self.args.init_method_std, self.args.num_layers))
-        build_module(self.model, LinearProxy,
-                     (self.args.init_method_std, self.args.num_layers))
-        build_module(self.model, EmbeddingProxy,
-                     (self.args.sequence_parallel, self.init_method))
+                    # compound module, go inside it
+                    build_module(module, init_args)
+
+        build_module(self.model, (self.args.init_method_std, self.args.num_layers))
 
         # reset parameters if the device is meta
         for param_name, param in self.model.named_parameters():

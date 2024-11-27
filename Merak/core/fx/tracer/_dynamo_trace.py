@@ -18,6 +18,7 @@ import torch
 from torch.fx._compatibility import compatibility
 from torch.fx.graph_module import GraphModule
 from typing import Dict, List, Union, Tuple
+import torch._dynamo as dynamo
 
 def dynamo_trace(
         module: torch.nn.Module,

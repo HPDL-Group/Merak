@@ -27,17 +27,18 @@ from torch.nn.parameter import Parameter
 
 from torch.nn import LayerNorm
 from .initialize import get_model_parallel_rank, get_model_parallel_group
-from .initialize import get_model_parallel_world_size
+from .initialize import get_model_parallel_world_size, get_model_parallel_rank
 from .mappings import (
     copy_to_model_parallel_region,
     gather_from_model_parallel_region,
     reduce_from_model_parallel_region,
     scatter_to_model_parallel_region,
+    scatter_to_conv_parallel_region,
     reduce_scatter_to_sequence_parallel_region,
     get_sequence_dim,
 )
 from ..recompute.checkpointing import get_rng_tracker
-from .utils import divide
+from .utils import divide, channels_uniform
 from .utils import split_tensor_along_last_dim
 from .utils import VocabUtility
 from Merak.merak_args import get_args
@@ -369,6 +370,85 @@ class RowParallelLinear(torch.nn.Module):
             self.bias is not None
         )
 
+class ColParallelConv2d(torch.nn.Module):
+    """Conv2d layer with channels parallelism.
+
+    Arguments:
+        in_channels (int): Number of channels in the input image
+        out_channels (int): Number of channels produced by the convolution
+        kernel_size (int or tuple): Size of the convolving kernel
+        stride (int or tuple, optional): Stride of the convolution. Default: 1
+        padding (int, tuple or str, optional): Padding added to all four sides of
+            the input. Default: 0
+        padding_mode (str, optional): ``'zeros'``, ``'reflect'``,
+            ``'replicate'`` or ``'circular'``. Default: ``'zeros'``
+        dilation (int or tuple, optional): Spacing between kernel elements. Default: 1
+        groups (int, optional): Number of blocked connections from input
+            channels to output channels. Default: 1
+        bias (bool, optional): If ``True``, adds a learnable bias to the
+            output. Default: ``True``
+    """
+
+    def __init__(self,
+                 in_channels,
+                 out_channels,
+                 kernel_size,
+                 stride,
+                 padding,
+                 dilation = 1,
+                 groups = 1,
+                 bias=True,
+                 input_is_parallel=False,
+                 **kwargs
+        ):
+        super(ColParallelConv2d, self).__init__()
+
+        del kwargs
+        # Keep input parameters
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.input_is_parallel = input_is_parallel
+        # Divide the weight matrix along the last dimension.
+        self.world_size = get_model_parallel_world_size()
+        self.rank = get_model_parallel_rank()
+        self.in_channels_per_partition = channels_uniform(
+            in_channels, self.world_size
+        )
+        self.in_channels_per_partition = self.in_channels_per_partition[self.rank]
+
+        # def conv layer
+        self.conv = torch.nn.Conv2d(
+            self.in_channels_per_partition,
+            out_channels,
+            kernel_size,
+            stride,
+            padding,
+            dilation,
+            groups,
+            bias
+        )
+        self.weight = self.conv.weight
+        self.bias = self.conv.bias
+
+    def forward(self, input_):
+        # Set up backprop all-reduce.
+        if self.input_is_parallel:
+            input_parallel = input_
+        else:
+            input_parallel = scatter_to_conv_parallel_region(input_)
+        # Matrix multiply.
+        output_parallel = self.conv(input_parallel)
+        # All-reduce across all the partitions.
+        output_ = reduce_from_model_parallel_region(output_parallel)
+        output = output_
+        output_bias = self.bias
+        return output, output_bias
+
+    def extra_repr(self) -> str:
+        return 'in_features={}, out_features={}, bias={}'.format(
+            self.in_channels_per_partition, self.out_channels,
+            self.bias is not None
+        )
 
 
 

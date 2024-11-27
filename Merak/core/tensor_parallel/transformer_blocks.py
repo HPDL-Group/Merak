@@ -28,7 +28,6 @@ from transformers.models.gpt2.modeling_gpt2 import (
                             GPT2MLP, GPT2Model, 
                             BaseModelOutputWithPastAndCrossAttentions)
 
-from .layer_proxy import Conv1DProxy, LinearProxy
 from .. import mpu
 from Merak.merak_args import get_args
 
@@ -75,11 +74,11 @@ class PipedGPT2Attention(GPT2Attention):
         attn_output = self._merge_heads(attn_output,
                                         self.num_heads, self.head_dim)
         
-        if isinstance(self.c_proj, (Conv1DProxy,LinearProxy)):
-            attn_output = self.c_proj(attn_output)
-            attn_bias = attn_output[0]
-        else:
-            attn_output, attn_bias = self.c_proj(attn_output)
+        # if isinstance(self.c_proj, (Conv1DProxy,LinearProxy)):
+        #     attn_output = self.c_proj(attn_output)
+        #     attn_bias = attn_output[0]
+        # else:
+        attn_output, attn_bias = self.c_proj(attn_output)
 
 
         return attn_output, attn_bias
@@ -89,11 +88,11 @@ class PipedMlp(GPT2MLP):
     def forward(self, hidden_states):
         hidden_states = self.c_fc(hidden_states)
         hidden_states = self.act(hidden_states)
-        if isinstance(self.c_proj, (Conv1DProxy,LinearProxy)):
-            hidden_states = self.c_proj(hidden_states)
-            hidden_states_bias = hidden_states[0]
-        else:
-            hidden_states, hidden_states_bias = self.c_proj(hidden_states)
+        # if isinstance(self.c_proj, (Conv1DProxy,LinearProxy)):
+        #     hidden_states = self.c_proj(hidden_states)
+        #     hidden_states_bias = hidden_states[0]
+        # else:
+        hidden_states, hidden_states_bias = self.c_proj(hidden_states)
         return hidden_states, hidden_states_bias
 
 

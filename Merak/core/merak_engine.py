@@ -67,6 +67,7 @@ from .engine_utils import (
 )
 
 from ..merak_args import MerakArguments
+from ..utils import RepeatingLoader
 
 class CommunicationEngine:
 
@@ -412,11 +413,10 @@ class CommunicationEngine:
 
         self.pipeline.rng_manager.set_recompute_rng_state(buffer_id)
         # do recomputation
-        with autocast(enabled=True if self.args.half_precision_backend == "cuda_amp" else False):
-            if isinstance(inputs, dict):
-                outputs = self.pipeline.module(**inputs)
-            else:
-                outputs = self.pipeline.module(inputs)
+        if isinstance(inputs, dict):
+            outputs = self.pipeline.module(**inputs)
+        else:
+            outputs = self.pipeline.module(inputs)
 
         outputs: tuple[torch.Tensor] = tuple(
                 [
@@ -779,12 +779,10 @@ class NetCalculationEngine:
         self.timers('forward_microstep').start()
         self.timers('forward').start()
 
-        with autocast(enabled=True
-                if self.args.half_precision_backend == "cuda_amp" else False):
-            if isinstance(inputs, dict):
-                outputs = self.pipeline.module(**inputs)
-            else:
-                outputs = self.pipeline.module(inputs)
+        if isinstance(inputs, dict):
+            outputs = self.pipeline.module(**inputs)
+        else:
+            outputs = self.pipeline.module(inputs)
 
         self.timers('forward').stop()
         self.timers('forward_microstep').stop()
@@ -877,11 +875,10 @@ class NetCalculationEngine:
     
         self.pipeline.rng_manager.store_fwd_rng_state(buffer_id)
 
-        with autocast(enabled=True if self.args.half_precision_backend == "cuda_amp" else False):
-            if isinstance(inputs, dict):
-                outputs = self.pipeline.module(**inputs)
-            else:
-                outputs = self.pipeline.module(inputs)
+        if isinstance(inputs, dict):
+            outputs = self.pipeline.module(**inputs)
+        else:
+            outputs = self.pipeline.module(inputs)
 
         if isinstance(outputs, torch.Tensor):
                 outputs = [outputs]
@@ -1001,7 +998,8 @@ class NetCalculationEngine:
                 self.scaler.update()
         if not self.args.half_precision_backend == "cuda_amp":
             self.optimizer.step()
-        self.pipeline.lr_scheduler.step()
+        if self.pipeline.update_lr:
+            self.pipeline.lr_scheduler.step()
 
         if (not self.args.fp16 and
             self.args.half_precision_backend not in ["cuda_amp", "apex"]):
@@ -1040,7 +1038,7 @@ class NetCalculationEngine:
                 should_log = (mpu.get_data_parallel_rank() == 0 and
                             mpu.get_model_parallel_rank() == 0)
                 see_memory_usage('After {} iterations'.format(
-                    self.pipeline.tuning_params.global_steps + 1), 
+                    self.pipeline.tuning_params.global_steps),
                     should_log, ranks=[dist.get_rank()])
 
     def zero_grad(self):
@@ -1074,12 +1072,12 @@ class PipelineEngine:
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
         self.tuning_params = tuning_params
-        self.data_iterator = dataloader
         self.loss_fn = loss_fn
 
         self.micro_batch_size = self.tuning_params.mbs
         self.micro_batches = self.tuning_params.gas
 
+        self.update_lr = True
         self.batch_fn = None
         self.grad_layer = None
         self._force_grad_boundary = False
@@ -1089,11 +1087,12 @@ class PipelineEngine:
         self.checkpoint_func_bak = None
 
         amp_engine = MixedPrecisionConfig(self.args)
+        self.data_iterator = RepeatingLoader(dataloader)
 
         if self.args.use_cpu:
             self.device = torch.device('cpu')
         else:
-            self.device = torch.device('cuda', int(os.environ['LOCAL_RANK']))
+            self.device = torch.device('cuda', args.local_rank)
 
         #stores the loss for the current micro batch being processed
         self.data_parallel_group = mpu.get_data_parallel_group()
@@ -1348,9 +1347,6 @@ class PipelineEngine:
                       f'iter time (s): {iter_time:0.3f} '
                       )
 
-        # reset outputs
-        self.netcal_engine.fwd_outputs = []
-
         # Restore the training iterator
         # self.set_dataiterator(train_iterator)
         if self.args.return_logits and self.is_last_stage():
@@ -1440,6 +1436,7 @@ class PipelineEngine:
         }
         # Reserve and reset buffers.
         self._reserve_pipe_buffers(pipe_schedule.num_pipe_buffers())
+        self.netcal_engine.fwd_outputs = []
 
         # For each step in the schedule
         for step_cmds in pipe_schedule:

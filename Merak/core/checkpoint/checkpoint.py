@@ -350,7 +350,7 @@ def load_checkpoint(
                 tracker_filename))
             print_rank_0('will not load any checkpoints and will start from '
                         'random')
-            return 0
+            return 0, None, None
         # Otherwise, read the tracker file and either set the iteration or
         # mark it as a release checkpoint.
         iteration, release = read_metadata(tracker_filename)
@@ -361,7 +361,7 @@ def load_checkpoint(
                                             release
                                         )
     elif checkpoint_name:
-        checkpoint_name = checkpoint_name[0]
+        checkpoint_name = checkpoint_name
         iteration, release = 0, True
     else:
         return 0, None, None
@@ -439,7 +439,7 @@ def load_checkpoint(
     if not release and not args.finetune and not args.no_load_optim:
         try:
             if optimizer is not None:
-                if args.zero_optimization:
+                if args.zero_stage is not None:
                     optimizer.load_state_dict(
                         opt_state_dict['optimizer_state_dict'],
                         load_optimizer_states=True)
@@ -459,7 +459,7 @@ def load_checkpoint(
                          'Specify --no_load_optim or --finetune to prevent '
                          'attempting to load the optimizer state, '
                          'exiting ...'.format(zero_ckpt_name \
-                                              if args.zero_optimization \
+                                              if args.zero_stage is not None \
                                                 else checkpoint_name))
             sys.exit()
 
@@ -551,8 +551,9 @@ def find_tf_checkpoint_files(path: str, model_name: str) -> Optional[List[str]]:
     for root, dirs, files in os.walk(path):
         tf_ckpt_file = set(files).intersection(set(TRANSFORMERS_MODEL_NAME))
         if tf_ckpt_file:
-            return [os.path.join(root, file) for file in tf_ckpt_file 
-                    if model_name in file]
+            for file in tf_ckpt_file:
+                if model_name in file:
+                    return os.path.join(root, file)
     return None
 
 
@@ -645,24 +646,24 @@ def load_peft_model_state_dict(
         verbose: bool = False
     ) -> OrderedDict:
     load_dir = args.resume_from_checkpoint
-    checkpoint_name = find_tf_checkpoint_files(load_dir, 
-                                               TRANSFORMERS_MODEL_NAME[1])
-
-    if checkpoint_name is None:
-        # Read the tracker file and set the iteration.
-        tracker_filename = get_checkpoint_tracker_filename(load_dir)
-        iteration, release = read_metadata(tracker_filename)
-        filename, _ = get_checkpoint_name(load_dir, iteration, 
-                                          args,release=release, peft=True)
-    else:
-        filename = checkpoint_name[0]
-        iteration = 0
+    filename = find_tf_checkpoint_files(
+        load_dir,
+        TRANSFORMERS_MODEL_NAME[1]
+    )
 
     if not os.path.isfile(filename):
-        if mpu.get_data_parallel_rank() == 0:
-            print(f'WARNING ! The path {args.resume_from_checkpoint} \
-                  has no lora model files {filename}')
-            return
+        # Read the tracker file and set the iteration.
+        tracker_filename = get_checkpoint_tracker_filename(load_dir)
+        if not os.path.isfile(tracker_filename):
+            if mpu.get_data_parallel_rank() == 0:
+                print(f'WARNING ! The path {args.resume_from_checkpoint} \
+                    has no lora model files {filename}')
+                return
+        iteration, release = read_metadata(tracker_filename)
+        filename, _ = get_checkpoint_name(load_dir, iteration,
+                                          args,release=release, peft=True)
+    else:
+        iteration = 0
 
     print_rank_0(f' loading peft checkpoint from {filename}')
 
