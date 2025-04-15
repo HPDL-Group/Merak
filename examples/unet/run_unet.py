@@ -56,6 +56,7 @@ predict_dataset = Image2D(args.train_dataset)
 
 conv_depths = [int(args.width*(2**k)) for k in range(args.depth)]
 unet = UNet2D(args.in_channels, args.out_channels, conv_depths)
+training_args.num_layers = args.depth
 # loss = LogNLLLoss()
 # optimizer = optim.Adam(unet.parameters(), lr=args.learning_rate)
 

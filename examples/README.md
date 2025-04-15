@@ -16,35 +16,59 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-## Merak examples
 
-These examples show that which model can be run with 3D parallelism in Merak. It shows that five popular models of pytorch, including GPT2, ViT, BERT, T5, Swin-transformer, running with 3D parallelism in Merak. These models show three cases of training model:
+# Merak Parallel Training Framework
 
-1. Model can be traced by `transformers.utils.fx` , like GPT2, T5 and BERT.
-2. Model is from `transformers`, but cannot be traced by `transformers.utils.fx`, like ViT.
-3. Model is not from `transformers`, but can be traced by `torch.fx`, like Swin-tranfromer.
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-User could make sense of Merak's mechanism by these examples, and apply it to another models. Currently, the running bash is on a machine with 4 GPUs.
+Merak is a high-performance distributed training framework designed for 3D parallel model training. Supports seamless parallelization across multiple GPUs/nodes.
 
-```bash
-python -m torch.distributed.launch --nproc_per_node=4  run_gpt.py \
-                --model-name gpt2 \
-                --data-files ./train_context.csv \
-                --output_dir ./output \
-                --per_device_train_batch_size 4 \
-                --gradient_accumulation_steps 4 \
-                --data_path /ssd/datasets/imagenet/pytorch
-```
+## 🔥 Supported Models
 
-User could enable zero optimization by set '--zero_optimization True', if the training fails with an out-of-memory (OOM) error.
+### Population Models
+|   |   |   |   |
+|---|---|---|---|
+| ✅ **DeepseekR1** |
 
-```bash
-python -m torch.distributed.launch --nproc_per_node=4  run_gpt.py \
-                --model-name gpt2 \
-                --zero_optimization True \
-                --data-files ./train_context.csv \
-                --output_dir ./output \
-                --per_device_train_batch_size 4 \
-                --gradient_accumulation_steps 4 \
-                --data_path /ssd/datasets/imagenet/pytorch
-```
+### Natural Language Processing
+|   |   |   |   |
+|---|---|---|---|
+| ✅ ALBERT | ✅ Bart | ✅ BERT | ✅ BlenderBot |
+| ✅ DistilBERT | ✅ Electra | ✅ GPT-2 | ✅ GPT-J |
+| ✅ LLaMA | ✅ MarianMT | ✅ mBART | ✅ mT5 | 
+| ✅ Nezha | ✅ Pegasus | ✅ PLBART | ✅ T5 |
+| ✅ XGLM | ✅ OPT | ✅ m2m100 | ✅ LayoutLM |
+
+### Multimodal & Vision-Language
+|   |   |   |
+|---|---|---|
+| ✅ CLIP | ✅ AltCLIP | ✅ TroCR |
+
+### Computer Vision
+|   |   |   |   |
+|---|---|---|---|
+| ✅ ConvNeXt | ✅ ResNet | ✅ Swin | ✅ DINOv2 |
+| ✅ SegFormer | ✅ MobileBERT | ✅ LXMERT |
+| ✅ UNet |  ✅ ViT |
+
+### Speech Processing
+|   |   |   |
+|---|---|---|
+| ✅ Wav2Vec2 | ✅ Speech2Text | ✅ Speech2Text2 |
+| ✅ Hubert |
+
+
+## ✨ Key Features
+- &zwnj;**Multi-Strategy Parallelism**&zwnj;
+  Tensor/Data/Pipeline Parallelism hybrid training
+- &zwnj;**Memory Optimization**&zwnj;
+  Zero Redundancy Optimizer (ZeRO) Stage 1
+- &zwnj;**High-Performance Pipeline Parallelism Strategy**&zwnj;
+  last_no_recompute_1f1b/full_critical_path_1f1b
+- &zwnj;**Other Functions**&zwnj;
+  Lora/Text Generation
+
+## 📌 Key Notes
+1. &zwnj;**Compatibility Levels**&zwnj;
+   - ✅ Full Support: Out-of-the-box parallel strategies  
+   - ⚠️ Partial Support: Requires manual configuration or has functional constraints  

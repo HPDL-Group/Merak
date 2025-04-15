@@ -16,25 +16,24 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# Running with Swin-transformer and torchvision models
+## Merak examples
 
-This script shows that the torch model, which is not from `transformers` library, but can be traced by `dynamo`, how to run with data and pipeline parallelism in Merak.
+These examples show that which model can be run with 3D parallelism in Merak. It shows that five popular models of pytorch, including GPT2, ViT, BERT, T5, Swin-transformer, running with 3D parallelism in Merak. These models show three cases of training model:
 
-Running with following bash:
+1. Model can be traced by `transformers.utils.fx` , like GPT2, T5 and BERT.
+2. Model is from `transformers`, but cannot be traced by `transformers.utils.fx`, like ViT.
+3. Model is not from `transformers`, but can be traced by `torch.fx`, like Swin-tranfromer.
+
+User could make sense of Merak's mechanism by these examples, and apply it to another models. Currently, the running bash is on a machine with 4 GPUs.
 
 ```bash
-torchrun --nproc_per_node=4 run_swin.py   \
-         --cfg ./swin_base_patch4_window7_224.yaml  \
-         --output_dir ./output \
-         --per_device_train_batch_size 4 --gradient_accumulation_steps 4 \
-         --num_layers 16 --wall_clock_breakdown True --logging_steps 10 \
-         --data_path /path/to/datasets
-
-torchrun --nproc-per-node=4 run_torchvision.py \
-         --data_path /path/to/datasets \
-         --output_dir ./output \
-         --cfg ./swin_base_patch4_window7_224.yaml \
-         --num_layers 152
+torchrun --nproc_per_node=4 \
+               run_unet.py \
+               --train_dataset "/path/to/datasets/" \
+               --output_dir ./output \
+               --checkpoint_path ./output/ckpt \
+               --per_device_train_batch_size 32 --gradient_accumulation_steps 1 \
+               --wall_clock_breakdown true --logging_steps 1 \
+               --input_name x \
+               --trace_method dynamo --crop 128 \
 ```
-
-Code is based on [Swin-transformer](https://github.com/microsoft/Swin-Transformer) repository.

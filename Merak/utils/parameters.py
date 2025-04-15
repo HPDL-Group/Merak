@@ -29,8 +29,11 @@ class BaseParams:
         self.args: MerakArguments = args
 
         self.mbs: int = args.per_device_train_batch_size
+        self.eval_mbs: int = args.per_device_eval_batch_size
         self.gas: int = args.gradient_accumulation_steps
         self.total_batch_size: int = self.mbs * self.gas * \
+            mpu.get_data_parallel_world_size()
+        self.eval_total_batch_size: int = self.eval_mbs * \
             mpu.get_data_parallel_world_size()
 
         self.max_steps: int = args.max_steps
@@ -39,13 +42,17 @@ class BaseParams:
         self.num_train_samples: int = None
         self.num_eval_samples: int = None
 
-        self.eval_step: int = args.eval_iters
+        self.eval_steps: int = args.eval_steps
 
         self.micro_steps: int = 0
         self.global_steps: int = 0
+        self.global_eval_steps: int = 0
         self.step: int = 0
+        self.eval_step: int = 0
 
     def train(self, dataloader: torch.utils.data.DataLoader):
+        if dataloader is None:
+            return
         total_steps = math.ceil(
                 self.train_epochs * len(dataloader) // (self.total_batch_size)
             )
@@ -60,10 +67,11 @@ class BaseParams:
         self.num_steps_per_epoch = self.max_steps // self.train_epochs
 
     def eval(self, dataloader: torch.utils.data.DataLoader):
-        if self.args.eval_iters < 0:
+        if dataloader is None:
+            return
+        if self.args.eval_steps is None:
             self.eval_steps = len(dataloader) // self.gas
-        self.num_eval_samples = self.eval_steps * self.total_batch_size
-        self.num_steps_per_epoch = self.eval_steps
+        self.num_eval_samples = self.eval_steps * self.eval_total_batch_size
 
     def resume(self, iteration: int) -> int:
         # load checkpoint
@@ -89,13 +97,33 @@ class BaseParams:
 
         return epochs_trained
 
-    def logging(self):
+    def should_break(self) -> bool:
+        return self.global_steps % self.num_steps_per_epoch == 0
+
+    def logging(self, eval=False):
+        if eval:
+            samples = self.num_eval_samples
+            epochs = 1
+            mbs = self.eval_mbs
+            gas = self.gas
+            total_batch_size = self.eval_total_batch_size
+            max_steps = self.eval_steps
+            strings = "Evaluation"
+        else:
+            samples = self.num_train_samples
+            epochs = self.train_epochs
+            mbs = self.mbs
+            gas = self.gas
+            total_batch_size = self.total_batch_size
+            max_steps = self.max_steps
+            strings = "Training"
+
         if torch.distributed.get_rank() == 0:
-            logger.info("***** Running training *****")
-            logger.info(f"  Num examples = {self.num_train_samples}")
-            logger.info(f"  Num Epochs = {self.train_epochs}")
-            logger.info(f"  Instantaneous micro batch size per device = {self.mbs}")
-            logger.info(f"  Gradient Accumulation steps = {self.gas}")
-            logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) "
-                        f"= {self.total_batch_size}")
-            logger.info(f"  Total optimization steps = {self.max_steps}")
+            logger.info(f"***** Running {strings} *****")
+            logger.info(f"  Num examples = {samples}")
+            logger.info(f"  Num Epochs = {epochs}")
+            logger.info(f"  Instantaneous micro batch size per device = {mbs}")
+            logger.info(f"  Gradient Accumulation steps = {gas}")
+            logger.info(f"  Total batch size (w. parallel, distributed & accumulation) "
+                        f"= {total_batch_size}")
+            logger.info(f"  Total optimization steps = {max_steps}")

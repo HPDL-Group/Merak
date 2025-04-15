@@ -17,30 +17,29 @@
 
 import torch
 
-import torch.distributed
 from torch.fx.node import Node
 from torch.fx.graph_module import GraphModule
 from typing import Dict, List, Set, Any, Optional, Type, Tuple
 
-from Merak.merak_args import get_args
-from Merak.core import mpu
-
 from .split_module import split_module, Partition
+
 
 def nearest_dependency_mapping(
         m: GraphModule,
         partition_name: str,
-        partitions: Partition
+        partitions: Partition,
+        total_params: int
     ) -> Dict[str, Partition]:
     min_deps_partitions: Dict[str, Partition] = {}
     new_partition_name = 0
     cur_partition_name = 0
     new_cost = 0
     cur_cost = 0
+    flag = False
 
     # recreate partitions by min nearnest data dependancy cost
     while cur_partition_name <= int(partition_name):
-        if new_cost > cur_cost:
+        if new_cost > cur_cost and not flag:
             new_partition_name += 1
         cur_partition = partitions[str(cur_partition_name)]
         new_partition = min_deps_partitions.get(str(new_partition_name))
@@ -56,7 +55,23 @@ def nearest_dependency_mapping(
             str(next_partition_name)
         ] if next_partition_name <= int(partition_name) else None
 
+        # 'get_attr' operation produces dtype obecjt which can not transfer 
+        # between stages, passing dtype using integer encoding could cause 
+        # correctness problem in current engine implementation.
+        for k, v in cur_partition.outputs.items():
+            if 'getattr' in k:# or 'add' in k:
+            # if 'getattr' in k:# or 'add' in k:
+                flag = True
+                break
+            flag = False
+
         if next_partition is not None:
+            for k, v in next_partition.outputs.items():
+                if 'getattr' in k:# or 'add' in k:
+                # if 'getattr' in k:# or 'add' in k:
+                    flag = True
+                    break
+                flag = False
             node_names = cur_partition.node_names + next_partition.node_names
             new_partition.node_names += node_names
             new_partition.outputs = next_partition.outputs
@@ -92,14 +107,12 @@ def correctness_check(
         node_name_to_shard_id: Dict[str, int],
         shard_id: int
     ):
-    global flag
     # nodes should stay with their inplace operation.
     # since Output 1 of CheckpointFunctionBackward is a view 
     # and its base or another view of its base has been modified inplace. 
     # This view is the output of a function that returns multiple views. 
     # Such functions do not allow the output views to be modified inplace. 
     if node.op == 'call_module':
-        flag = False
         for arg in node.args:
             if hasattr(gm, node.target):
                 mod = getattr(gm, node.target)
@@ -121,11 +134,8 @@ def correctness_check(
                                     node_name_to_shard_id[node_name] = inplace_shard_id
                                 else:
                                     shard_id = inplace_shard_id
-                                    flag = True
                                     return shard_id
-                if flag:
-                    break
- 
+    
     # module's weight and bias nodes should be in the same shard.
     if node.op == 'get_attr':
         flag = False
@@ -141,10 +151,7 @@ def correctness_check(
                                 node_name_to_shard_id[node_name] = module_weight_shard_id
                             else:
                                 shard_id = module_weight_shard_id
-                                flag = True
                                 return shard_id
-                    if flag:
-                        break
 
 
 def avgnode_split_pass(gm: torch.fx.GraphModule, shard_nums: int) -> Dict[str, int]:
@@ -182,16 +189,8 @@ def nearest_deps_split(
         traced_graph_module: GraphModule,
         model: torch.nn.Module
     ) -> Tuple[List[GraphModule], Dict[str, int]]:
-    # mapping node name to shard id
-    # node_name_to_shard_id = avgnode_split_pass(
-    #     traced_graph_module, len(traced_graph_module.graph.nodes)
-    # )
-
     # get shard nums
-    pipe = mpu.get_pipe_parallel_world_size()
-    args = get_args()
-    num_layers = args.num_layers
-    shard_nums = num_layers*pipe + 4
+    shard_nums = len(traced_graph_module.graph.nodes)
 
     # mapping node name to shard id
     node_name_to_shard_id = avgnode_split_pass(
@@ -199,10 +198,11 @@ def nearest_deps_split(
     )
 
     # split graph
-    module_list, func_inputs = split_module(
+    module_list, func_inputs, partitions = split_module(
         traced_graph_module,
         model,
         node_name_to_shard_id,
         nearest_dependency_mapping
     )
+
     return module_list, func_inputs

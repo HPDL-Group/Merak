@@ -159,14 +159,14 @@ class CommunicationEngine:
             self.timers('pipe_send_output').start()
 
         outputs = self.pipeline.pipe_buffers['outputs'][buffer_id]
-        self.grad_layer = self.pipeline.grad_layer
+        # self.grad_layer = self.pipeline.grad_layer
 
-        if self.first_output_send:
+        if self.first_output_send or self.pipeline.generate_seq:
             self.first_output_send = False
             _send_tensor_meta(outputs, self.device)
 
-        if self.grad_layer is None:
-            self.grad_layer = _create_buffer(outputs, self.device)
+        # if self.grad_layer is None:
+        #     self.grad_layer = _create_buffer(outputs, self.device)
 
         # print(outputs.dtype, "==================")
         assert isinstance(outputs, tuple)
@@ -217,7 +217,7 @@ class CommunicationEngine:
         recvd = None
 
         # Allocate the buffer if necessary
-        if self.pipe_recv_buf is None:
+        if self.pipe_recv_buf is None or self.pipeline.generate_seq:
             self.pipe_recv_buf = _recv_tensor_meta(self.device)
 
         assert isinstance(self.pipe_recv_buf, tuple)
@@ -269,7 +269,7 @@ class CommunicationEngine:
         outputs = self.pipeline.pipe_buffers['outputs'][buffer_id]
 
         # Allocate gradient if necessary
-        if self.pipeline.grad_layer is None:
+        if self.pipeline.grad_layer is None or self.pipeline.generate_seq:
             self.pipeline.grad_layer = _create_buffer(outputs, self.device)
         # print('before', self.global_rank, self.grad_layer)
 
@@ -443,11 +443,11 @@ class CommunicationEngine:
             self.timers('pipe_recv_grad').start()
 
         # Allocate gradient if necessary
-        if self.pipeline.grad_layer is None:
+        if self.pipeline.grad_layer is None or self.pipeline.generate_seq:
             self.pipeline.grad_layer = _create_buffer(outputs, self.device)
 
         assert isinstance(outputs, tuple)
-        for idx, buffer in enumerate(self.grad_layer):
+        for idx, buffer in enumerate(self.pipeline.grad_layer):
             if buffer.requires_grad:
                 p2p.recv_backward(buffer)
         if self.args.wall_clock_breakdown:
@@ -478,6 +478,7 @@ class CommunicationEngine:
             # Average over DP groups
             if reduce_dp and self.is_data_parallel:
                 if torch.is_tensor(reduced):
+                    reduced = reduced.to(self.pipeline.device)
                     dist.all_reduce(reduced, \
                                     group=mpu.get_data_parallel_group())
                     reduced /= mpu.get_data_parallel_world_size()
@@ -490,7 +491,8 @@ class CommunicationEngine:
             return reduced
         else:
             raise NotImplementedError(f'reduction type {reduce} not supported.')
-        
+
+    @torch.no_grad
     def _bcast_pipe_scalar(
             self,
             data: torch.Tensor,
@@ -503,7 +505,7 @@ class CommunicationEngine:
         assert src_rank in self.grid.pp_group
 
         if self.global_rank == src_rank:
-            result = data.clone().detach()
+            result = data.clone().detach().type(dtype).to(self.pipeline.device)
         else:
             result = torch.Tensor([0.]).type(dtype).to(self.pipeline.device)
 
@@ -512,16 +514,19 @@ class CommunicationEngine:
                        group=mpu.get_pipe_parallel_group())
 
         return result
-    
-    def _aggregate_total_loss(self, total_loss: torch.Tensor) -> torch.Tensor:
+
+    @torch.no_grad
+    def _aggregate_total_loss(
+            self,
+            total_loss: Union[torch.Tensor, Tuple[torch.Tensor], List[torch.Tensor]]
+        ) -> torch.Tensor:
         # Scale loss, average among DP ranks, and bcast loss to the rest of my
         # DP group
         if self.pipeline.is_last_stage():
             loss = _scale_loss_by_gas(total_loss, self.pipeline.tuning_params.gas)
-            self.dp_group_loss = loss.clone().detach()
 
             ## Average loss across all data-parallel groups
-            agg_loss = self.dp_group_loss.clone().detach()
+            agg_loss = loss.clone().detach()
             #print(f'RANK={self.global_rank} bcast SENDER \
             #src={self.global_rank} group={self.grid.pp_group}', flush=True)
             if self.is_data_parallel:
@@ -529,7 +534,7 @@ class CommunicationEngine:
                 agg_loss /= mpu.get_data_parallel_world_size()
 
             assert self.global_rank in self.grid.pp_group
-            losses = torch.Tensor([self.dp_group_loss, agg_loss]).to(self.device)
+            losses = torch.Tensor([agg_loss]).to(self.device)
             dist.broadcast(tensor=losses,
                            src=self.global_rank,
                            group=mpu.get_pipe_parallel_group())
@@ -538,12 +543,11 @@ class CommunicationEngine:
             # Get loss from last stage
             src_rank = self.grid.stage_to_global(self.num_stages - 1)
             assert src_rank in self.grid.pp_group
-            losses = torch.Tensor([0., 0.]).to(self.device)
+            losses = torch.Tensor([0.]).to(self.device)
             dist.broadcast(tensor=losses,
                            src=src_rank,
                            group=self.grid.get_pipe_parallel_group())
-            self.dp_group_loss = losses[0].clone().detach()
-            agg_loss = losses[1].clone().detach()
+            agg_loss = losses[0].clone().detach()
 
         return agg_loss
     
@@ -635,12 +639,10 @@ class NetCalculationEngine:
         self.args = pipeline.args
         self.timers = pipeline.timers
         self.device = pipeline.device
-        self.optimizer = pipeline.optimizer
 
         self.loss_fn = loss_fn
         self.pipeline = pipeline
 
-        self._compute_loss = True
         self.do_train = True
 
         if hasattr(self.pipeline.module, 'act_ckpt_interval'):
@@ -708,26 +710,26 @@ class NetCalculationEngine:
             load_idx = sum([len(self.pipeline.input_to_stage_dic[i])
                             for i in self.pipeline.input_to_stage_dic])
 
-            if not self.args.text_generation:
-                if isinstance(batch, dict):
-                    for k, v in batch.items():
-                        batch[k] = v.to(self.device)
-                    self.pipeline.pipe_buffers['labels'][buffer_id] = batch
-                else:
-                    # 如果batch的数据少于load_idx，则是使用了split input，就不需要
-                    # 再做划分
-                    if load_idx < len(batch):
-                        # 去掉last stage不需要的部分
-                        batch = batch[load_idx:]
+            if isinstance(batch, dict):
+                for k, v in batch.items():
+                    batch[k] = v.to(self.device)
+                self.pipeline.pipe_buffers['labels'][buffer_id] = batch
+            else:
+                # 如果batch的数据少于load_idx，则是使用了split input，就不需要
+                # 再做划分
+                if load_idx < len(batch):
+                    # 去掉last stage不需要的部分
+                    batch = batch[load_idx:]
+                if batch:
                     for x in batch:
                         assert torch.is_tensor(x)
                         x = x.to(self.device).detach()
                         loaded.append(x)
                     loaded = tuple(loaded)
+                else:
+                    loaded = None
 
-                    self.pipeline.pipe_buffers['labels'][buffer_id] = loaded
-            else:
-                self.pipeline.pipe_buffers['labels'][buffer_id] = None
+                self.pipeline.pipe_buffers['labels'][buffer_id] = loaded
 
 
         if self.args.wall_clock_breakdown:
@@ -749,10 +751,11 @@ class NetCalculationEngine:
             inputs = tuple(
                 [
                     torch.Size(input.tolist())
-                    if input.dim() == 1
+                    if (input.dim() == 1
                     and (input.data[0] == self.args.per_device_train_batch_size or
                         input.data[0] == -1)
-                    and not len(input.data) == 1
+                    and not len(input.data) == 1)
+                    or not torch.is_tensor(input)
                     else input
                     for input in inputs
                 ]
@@ -789,10 +792,10 @@ class NetCalculationEngine:
 
         # Optionally compute loss on the last device
         if self.pipeline.is_last_stage():
-            if self._compute_loss and self.loss_model is not None:
+            if self.loss_model is not None:
                 labels = self.pipeline.pipe_buffers['labels'][buffer_id]
                 # print(outputs.shape, labels.shape)
-                if not self.args.text_generation:
+                if self.pipeline._compute_loss:
                     self.loss = self.loss_model(outputs, labels)
                 if self.args.return_logits and not self.do_train:
                     self.logits.append(outputs)
@@ -896,7 +899,7 @@ class NetCalculationEngine:
         self.pipeline.pipe_buffers['outputs'][buffer_id] = outputs
 
     def _exec_backward_pass(self, buffer_id: int):
-        assert self.optimizer is not None, \
+        assert self.pipeline.optimizer is not None, \
             "must provide optimizer during init in order to use backward"
 
         mem_status('BEFORE BWD', reset_max=True)
@@ -918,13 +921,13 @@ class NetCalculationEngine:
                 delay_unscale = \
                     not self.pipeline.is_gradient_accumulation_boundary()
                 with amp.scale_loss(self.loss,
-                                    self.optimizer,
+                                    self.pipeline.optimizer,
                                     delay_unscale=delay_unscale) as scaled_loss:
                     scaled_loss.backward()
             elif self.args.half_precision_backend == "cuda_amp":
                 self.scaler.scale(self.loss).backward()
             elif self.args.fp16 or self.args.zero_stage == 1:
-                self.optimizer.backward(self.loss)
+                self.pipeline.optimizer.backward(self.loss)
             else:
                 self.loss.backward()
 
@@ -983,21 +986,21 @@ class NetCalculationEngine:
             elif self.args.half_precision_backend == "apex":
                 # AMP's recommended way of doing clipping
                 # https://nvidia.github.io/apex/advanced.html#gradient-clipping
-                master_params = amp.master_params(self.optimizer)
+                master_params = amp.master_params(self.pipeline.optimizer)
                 clip_grad_norm_(parameters=master_params,
                                 max_norm=self.args.max_grad_norm,
                                 mpu=mpu)
             elif self.args.half_precision_backend == "cuda_amp":
                 if self.scaler._scale is None:
                     self.scaler._lazy_init_scale_growth_tracker(self.device)
-                self.scaler.unscale_(self.optimizer)
+                self.scaler.unscale_(self.pipeline.optimizer)
                 torch.nn.utils.clip_grad_norm_(
                                 parameters=self.pipeline.module.parameters(),
                                 max_norm=self.args.max_grad_norm)
-                self.scaler.step(self.optimizer)
+                self.scaler.step(self.pipeline.optimizer)
                 self.scaler.update()
         if not self.args.half_precision_backend == "cuda_amp":
-            self.optimizer.step()
+            self.pipeline.optimizer.step()
         if self.pipeline.update_lr:
             self.pipeline.lr_scheduler.step()
 
@@ -1005,7 +1008,7 @@ class NetCalculationEngine:
             self.args.half_precision_backend not in ["cuda_amp", "apex"]):
             self.zero_grad()
         else:
-            self.optimizer.zero_grad()
+            self.pipeline.optimizer.zero_grad()
 
         mem_status('AFTER STEP')
 
@@ -1063,7 +1066,6 @@ class PipelineEngine:
             optimizer: Optional[Callable] = None,
             lr_scheduler: Optional[Callable] = None,
             tuning_params: Optional[Callable] = None,
-            dataloader: torch.utils.data.DataLoader = None,
             loss_fn: Optional[Callable] = None,
         ):
 
@@ -1081,13 +1083,12 @@ class PipelineEngine:
         self.batch_fn = None
         self.grad_layer = None
         self._force_grad_boundary = False
+        self.generate_seq = False
         self.input_to_stage_dic = model.input_to_stage_dic
         #stores the loss for the entire batch
         self.total_loss = None
         self.checkpoint_func_bak = None
-
-        amp_engine = MixedPrecisionConfig(self.args)
-        self.data_iterator = RepeatingLoader(dataloader)
+        self.data_iterator = None
 
         if self.args.use_cpu:
             self.device = torch.device('cpu')
@@ -1100,32 +1101,14 @@ class PipelineEngine:
         pp_size = mpu.get_pipe_parallel_world_size()
         tp_size = mpu.get_model_parallel_world_size()
 
-        # assert not self.elasticity_enabled(), \
-        # "Elasticity is not currently supported with pipeline parallelism."
-        if not self.args.text_generation:
-            self.optimizer = self.optimizer(self.module)
-            self.lr_scheduler = self.lr_scheduler(self.optimizer)
-
-        if self.args.fp16 or self.args.half_precision_backend == 'apex':
-            self.module, self.optimizer = amp_engine.configure(
-                self.optimizer, self.module, self.device
-            )
-
-        if isinstance(model, PipelineModule):
-            self.module.configure_distributed_model(self.device)
-        else:
-            self.module.to(self.device)
-        if self.args.zero_stage == 1:
-            dynamic_loss_args = amp_engine.dynamic_loss_args if args.fp16 else None
-            self.optimizer = configure_zero_optimizer(self.optimizer, dynamic_loss_args)
-        if not self.args.no_tie_modules:
-            self.module.tie_modules()
-
         self.timers = SynchronizedWallClockTimer()
         self.rng_manager = RNGManager()
         self.comm_engine = CommunicationEngine(self)
         self.netcal_engine = NetCalculationEngine(self, loss_fn)
         self.global_rank = self.comm_engine.global_rank
+
+        # configure optimizer
+        self._configure_model_and_optimizer()
 
         # set pipeline scheduler
         TrainScheduleClass = self.scheduler_method()
@@ -1152,7 +1135,7 @@ class PipelineEngine:
                         group=mpu.get_model_parallel_group())
 
         params_tensor = params_tensor.tolist()
-        total_params = params_tensor[0]
+        total_params = self.module.total_num_params #params_tensor[0]
         unique_params = params_tensor[1]
         # if self.grid.data_parallel_id == 0:
         if self.comm_engine.grid.data_parallel_id == 0:
@@ -1190,6 +1173,30 @@ class PipelineEngine:
 
         self.timers._init()
 
+    def _configure_model_and_optimizer(self, force=False):
+        # delay create optimizer
+        if self.args.lora_config and not force:
+            return
+        amp_engine = MixedPrecisionConfig(self.args)
+        if self.optimizer is not None:
+            self.optimizer = self.optimizer(self.module)
+            self.lr_scheduler = self.lr_scheduler(self.optimizer)
+
+        if self.args.fp16 or self.args.half_precision_backend == 'apex':
+            self.module, self.optimizer = amp_engine.configure(
+                self.optimizer, self.module, self.device
+            )
+
+        if isinstance(self.module, PipelineModule):
+            self.module.configure_distributed_model(self.device)
+        else:
+            self.module.to(self.device)
+        if self.args.zero_stage == 1:
+            dynamic_loss_args = amp_engine.dynamic_loss_args() if self.args.fp16 else None
+            self.optimizer = configure_zero_optimizer(self.optimizer, dynamic_loss_args)
+        if not self.args.no_tie_modules:
+            self.module.tie_modules()
+
     def is_gradient_accumulation_boundary(self):
         return self.tuning_params.micro_steps % \
             self.args.gradient_accumulation_steps == 0
@@ -1226,8 +1233,12 @@ class PipelineEngine:
                 f'train_batch() requires gradients enabled. Use eval_batch()'
                 f'instead.')
 
+        # set iter dataloader
+        if self.data_iterator is None:
+            self.data_iterator = RepeatingLoader(data_iter) if data_iter is not None else None
+
         self.module.train()
-        self.do_train = True
+        self.netcal_engine.do_train = True
         self.total_loss = None
         self._compute_loss = True
 
@@ -1272,6 +1283,7 @@ class PipelineEngine:
     def eval_batch(
             self,
             batch_fn: Optional[Callable] = None,
+            data_iter: Optional[torch.utils.data.DataLoader] = None,
             compute_loss: Optional[bool] = True,
             reduce_output: str = 'avg'
         ) -> Tuple[Union[Tuple[torch.Tensor, torch.Tensor]], torch.Tensor, torch.Tensor]:
@@ -1303,6 +1315,11 @@ class PipelineEngine:
         Returns:
             The arithmetic mean of the losses computed this batch.
         """
+
+        # set iter dataloader
+        _create_iterdata = self.netcal_engine.do_train
+        if _create_iterdata or self.data_iterator is None:
+            self.data_iterator = RepeatingLoader(data_iter) if data_iter is not None else None
 
         self.module.eval()
         self.netcal_engine.do_train = False
@@ -1337,13 +1354,13 @@ class PipelineEngine:
             eval_output = 0.
 
         if self.tuning_params.global_steps % self.args.logging_steps == 0:
-            if self.global_rank == 0 and not self.args.text_generation:
+            if self.global_rank == 0 and self._compute_loss:
                 elapsed = self.timers('eval_batch').elapsed(reset=True)
                 # print(self.train_batch_size(), elapsed)
                 iter_time = elapsed / self.args.logging_steps
                 print(f'Evaluation: '
-                      f'steps: {self.tuning_params.global_steps} '
-                      f'loss: {eval_output.mean().item():0.4f} '
+                      f'steps: {self.tuning_params.global_eval_steps} '
+                      f'loss: {eval_output.mean().item() if compute_loss else eval_output:0.4f} '
                       f'iter time (s): {iter_time:0.3f} '
                       )
 
@@ -1469,7 +1486,7 @@ class PipelineEngine:
 
     def _next_batch(self) -> Tuple[torch.Tensor]:
         batch = None
-        if not self.args.text_generation and self.data_iterator is not None:
+        if self.data_iterator is not None:
             if not isinstance(self.data_iterator, \
                 (_MultiProcessingDataLoaderIter, _SingleProcessDataLoaderIter)):
                 self.data_iterator = iter(self.data_iterator)

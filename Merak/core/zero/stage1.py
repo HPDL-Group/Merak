@@ -280,7 +280,14 @@ class ZeroOptimizer_Stage1(object):
             if dynamic_loss_args is None:
                 self.loss_scaler = DynamicLossScaler()
             else:
-                self.loss_scaler = DynamicLossScaler(**dynamic_loss_args)
+                init_scale = dynamic_loss_args['INITIAL_LOSS_SCALE']
+                scale_window = dynamic_loss_args['SCALE_WINDOW']
+                min_loss_scale = dynamic_loss_args['MIN_LOSS_SCALE']
+                self.loss_scaler = DynamicLossScaler(
+                    init_scale=init_scale,
+                    scale_window=scale_window,
+                    min_scale=min_loss_scale
+                )
 
             self.dynamic_loss_scale = True
 

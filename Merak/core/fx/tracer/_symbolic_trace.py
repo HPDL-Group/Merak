@@ -51,6 +51,7 @@ def tf_symbolic_trace(
     input_names: List[str] = None,
     tracer_cls=MerakTracer,
     leaf_modules=(),
+    dummy_inputs=None,
 ) -> Graph:
     """
     Performs symbolic tracing on the model.
@@ -105,6 +106,12 @@ def tf_symbolic_trace(
     traced.class_for_deserialization = model.__class__
     traced.device = model.device
 
+    if isinstance(dummy_inputs, dict):
+        inputs = tuple(dummy_inputs.values())
+    elif isinstance(dummy_inputs, (tuple, list)):
+        inputs = tuple(dummy_inputs)
+    else:
+        raise TypeError("Type of dummy inputs must be list, tuple or dict")
     return traced
 
 def get_concrete_args(model: torch.nn.Module, input_names: List[str]) -> Dict[str, None]:

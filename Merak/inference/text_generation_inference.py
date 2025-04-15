@@ -85,6 +85,7 @@ class text_generation_pipeline:
         self.model_config = model.config
         self.args = args
         self.tokenizer = tokenizer
+        self.args.return_logits = True
 
         self.input = None
         self.input_to_stage_dic = None
@@ -196,9 +197,12 @@ class text_generation_pipeline:
 
             lengths = torch.ones([batch_size]).long().to(self.device) * maxlen
             while context_length <= (maxlen):
-                loss, output, labels = self.infer_engine.eval_batch(batch_fn=self.get_batch)
+                loss, output, labels = self.infer_engine.eval_batch(
+                    batch_fn=self.get_batch,
+                    compute_loss=False
+                )
 
-                if output is not None and tp_size > 1:
+                if output is not None and tp_size > 1 and self.args.parallel_vocab:
                     tensor_list = [
                         torch.zeros(
                             [
@@ -216,7 +220,7 @@ class text_generation_pipeline:
 
                 if dist.get_rank() == dist.get_world_size() - 1:
                     assert output is not None
-                    logits = output[0][0][:, context_length - 1, :]
+                    logits = output[0][:, context_length - 1, :]
 
                 # if mpu.is_pipeline_last_stage():
                     if False: #args.greedy:
@@ -224,8 +228,8 @@ class text_generation_pipeline:
                     else:
                         logits = logits.float()
                         logits /= args.temperature
-                        # logits = top_k_logits(logits, top_k=args.top_k,
-                        #                       top_p=args.top_p)
+                        logits = top_k_logits(logits, top_k=args.top_k,
+                                              top_p=args.top_p)
                         log_probs = F.softmax(logits, dim=-1)
                         # 获取输入tensor中最大值的index，因为样本数为1
                         prev = torch.multinomial(log_probs, num_samples=1).view(-1)
@@ -272,6 +276,7 @@ class text_generation_pipeline:
     def generate_samples_interactive(self, print_frequency: int = 24):
 
         self.init_engine()
+        self.infer_engine._configure_model_and_optimizer()
 
         # load merak checkpoint
         if self.args.resume_from_checkpoint and os.path.isdir(self.args.resume_from_checkpoint):

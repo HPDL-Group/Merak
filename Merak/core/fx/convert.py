@@ -22,7 +22,6 @@ import torch.nn as nn
 
 from torch.nn import Module
 from torch.fx.graph_module import GraphModule
-from transformers.models.t5.modeling_t5 import T5LayerNorm
 from transformers import Conv1D
 from transformers.utils.fx import _SUPPORTED_MODELS as tf_suported_models
 from typing import Dict, List, Set, Any, Optional, Tuple
@@ -57,7 +56,7 @@ def convert_to_sequential(
     assert args.trace_method in ['fx', 'dynamo']
 
     new_suported_models = tf_suported_models + (args.trace_model,)
-    extra_leaf_modules = (T5LayerNorm, Conv1D) + extra_leaf_modules
+    extra_leaf_modules = (Conv1D,) + extra_leaf_modules
 
     if model.__class__.__name__ in new_suported_models:
         dummy_inputs = _generate_dummy_input(args, model)
@@ -65,7 +64,8 @@ def convert_to_sequential(
             traced = tf_symbolic_trace(
                 model,
                 input_names=args.input_names,
-                leaf_modules=extra_leaf_modules
+                leaf_modules=extra_leaf_modules,
+                dummy_inputs=dummy_inputs,
             )
             # 用于修改trace后的常数
             # traced = _split_attr_values(model, traced, args)
@@ -112,12 +112,13 @@ def convert_to_sequential(
     if args.cache_sharding:
         _save_cache(result, input_to_shard, args)
 
-    # # test code
+    # test code
     # for idx, i in enumerate(result):
     #     if torch.distributed.get_rank() == 0:
     #         print(f"==================={idx}======================")
     #         i.graph.print_tabular()
     #     print_rank_0(i.code)
+    
 
     return model, result, input_to_shard
 

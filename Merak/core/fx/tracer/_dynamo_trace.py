@@ -18,31 +18,44 @@ import torch
 from torch.fx._compatibility import compatibility
 from torch.fx.graph_module import GraphModule
 from typing import Dict, List, Union, Tuple
-import torch._dynamo as dynamo
 
 def dynamo_trace(
         module: torch.nn.Module,
         dummy_inputs: Union[Dict[str, torch.Tensor], Tuple[torch.Tensor], List[torch.Tensor]]
     ) -> List[GraphModule]:
     if isinstance(dummy_inputs, dict):
-        inputs = dummy_inputs.values()
+        inputs = tuple(dummy_inputs.values())
     elif isinstance(dummy_inputs, (tuple, list)):
         inputs = tuple(dummy_inputs)
     else:
         raise TypeError("Type of dummy inputs must be list, tuple or dict")
-    layers = []
 
-    @compatibility(is_backward_compatible=True)
-    def custom_backend(gm, ex):
-        layers.append(gm)
-        return gm.forward
+    try:
+        ep = torch.export.export_for_training(
+            module,
+            inputs,
+        )
+    except Exception as e:
+        raise RuntimeError(
+            "It seems that we cannot capture your model as a full graph. "
+            "Typical reasons include graph breaks, data/shape-dependent "
+            "control flow, or missing meta kernels for custom operators. "
+            "You can use our manual pipeline interfaces, or try to fix the "
+            "graph breaks, see https://pytorch.org/docs/stable/export.html"
+        ) from e
 
-    mod = torch.compile(module, backend=custom_backend)
-    outputs = mod(*inputs)
+    traced = ep.module()
 
-    assert len(layers) == 1, (
-        'torch dynamo produces multiple subgraphs due to guard fail, '
-        'current split method do not support multi inputs'
-    )
+    # Deduplicate `get_attr` nodes that refer to the same parameter . Downstream code for moving
+    # parameters relies on the invariant that parameter accesses happen once. This is not necessarily
+    # the case (especially with custom tracers), so fix that up here.
+    get_attr_nodes: Dict[str, torch.fx.Node] = {}
+    for node in traced.graph.nodes:  # type: ignore[union-attr]
+        if node.op == "get_attr":
+            get_attr_nodes.setdefault(node.target, node)
 
-    return layers[0]
+            if get_attr_nodes[node.target] != node:
+                node.replace_all_uses_with(get_attr_nodes[node.target])
+                traced.graph.erase_node(node)  # type: ignore[operator, union-attr]
+
+    return traced

@@ -80,37 +80,37 @@ def _split_attr_values(model: Module, gm: GraphModule, merak_args: MerakArgument
     if not mp_attr_list:
         mp_attr_list = DEFAULT_MP_ATTR
 
-    split_attr = {'gpt': 3*merak_args.hidden_size}
-    def _set_model_mp_attr(model):
-        for n, module in model.named_children():
-            for attr in mp_attr_list:
-                if hasattr(module, attr):
-                    old_attr = getattr(module, attr)
-                    split_attr[attr] = old_attr
-            if len(list(module.children())) > 0:
-                ## compound module, go inside it
-                _set_model_mp_attr(module)
-    _set_model_mp_attr(model)
+    split_attr = {'gpt': 3*merak_args.hidden_size, 'qwen2': 5120}
+    # def _set_model_mp_attr(model):
+    #     for n, module in model.named_children():
+    #         for attr in mp_attr_list:
+    #             if hasattr(module, attr):
+    #                 old_attr = getattr(module, attr)
+    #                 split_attr[attr] = old_attr
+    #         if len(list(module.children())) > 0:
+    #             ## compound module, go inside it
+    #             _set_model_mp_attr(module)
+    # _set_model_mp_attr(model)
 
     for node in gm.graph.nodes:
         new_args = []
 
         for arg in node.args:
             if isinstance(arg, int):
-                if arg == merak_args.hidden_size or \
-                   arg in merak_args.num_heads or \
-                   arg in split_attr.values():
+                # if arg == merak_args.hidden_size or \
+                #    arg in merak_args.num_heads or \
+                if arg in split_attr.values():
                     arg = int(arg / mpu.get_model_parallel_world_size())
-            if isinstance(arg, (tuple, list)):
-                value_list = []
-                for value in arg:
-                    if isinstance(value, int):
-                        if value == merak_args.hidden_size or \
-                           value in merak_args.num_heads or \
-                           value in split_attr.values():
-                            value = int(value / mpu.get_model_parallel_world_size())
-                    value_list.append(value)
-                arg = tuple(value_list)
+            # if isinstance(arg, (tuple, list)):
+            #     value_list = []
+            #     for value in arg:
+            #         if isinstance(value, int):
+            #             if value == merak_args.hidden_size or \
+            #                value in merak_args.num_heads or \
+            #                value in split_attr.values():
+            #                 value = int(value / mpu.get_model_parallel_world_size())
+            #         value_list.append(value)
+            #     arg = tuple(value_list)
             new_args.append(arg)
 
         with new_graph.inserting_after():

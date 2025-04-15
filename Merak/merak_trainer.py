@@ -107,16 +107,15 @@ class MerakTrainer:
         self.lr_scheduler = None
         self.train_dataloader = None
         self.eval_dataloader = None
-        self.train_engine = None
-        self.eval_engine = None
+        self.engine = None
         self.input_to_stage_dic = None
         self.dummy_inputs = None
+        self._already_load = False
 
         self._save_checkpoint = checkpoint.save_checkpoint
         self._rotate_checkpoints = checkpoint.rotate_checkpoints
         self._load_checkpoint = checkpoint.load_checkpoint
         self._load_peft_model_state_dict = checkpoint.load_peft_model_state_dict
-        self.engine = PipelineEngine
 
         if hasattr(self.model, "config"):
             self.model_config = self.model.config
@@ -127,8 +126,7 @@ class MerakTrainer:
 
         self.peft_config = None
 
-        self.train_params = BaseParams(self.args)
-        self.eval_params = BaseParams(self.args)
+        self.tuning_params = BaseParams(self.args)
 
         if dist.get_rank() == 0:
             self.summary_writer = self.get_summary_writer()
@@ -138,9 +136,9 @@ class MerakTrainer:
         # init training parameters
         self.create_dataloader()
         # self.optimizer = self.create_optimizer(self.model)
-        self.train_params.train(self.train_dataloader)
+        self.tuning_params.train(self.train_dataloader)
         if self.eval_dataloader is not None:
-            self.eval_params.eval(self.eval_dataloader)
+            self.tuning_params.eval(self.eval_dataloader)
         self.get_dummy_inputs()
         # self.lr_scheduler = self.create_lr_scheduler()
         self.loss_fn = self.get_loss_fn() \
@@ -190,6 +188,8 @@ class MerakTrainer:
             data_parallel_size=mpu.get_data_parallel_world_size())
 
     def create_dataloader(self) -> torch.utils.data.DataLoader:
+        if self.train_dataset is None and self.eval_dataset is None:
+            raise ValueError("MerakTrainer: training requires a train_dataset/eval_dataset.")
         if self.train_dataset is not None:
             train_dataset = self.train_dataset
 
@@ -206,8 +206,6 @@ class MerakTrainer:
                 worker_init_fn=worker_init \
                     if self.args.dataloader_num_workers > 0 else None
             )
-        else:
-            raise ValueError("MerakTrainer: training requires a train_dataset.")
         
         if self.eval_dataset is not None:
 
@@ -229,12 +227,12 @@ class MerakTrainer:
         optimizer_grouped_parameters = [
             {
                 "params": [p for n, p in model.named_parameters() \
-                           if n in decay_parameters],
+                           if n in decay_parameters and p.requires_grad],
                 "weight_decay": self.args.weight_decay,
             },
             {
                 "params": [p for n, p in model.named_parameters() \
-                           if n not in decay_parameters],
+                           if n not in decay_parameters and p.requires_grad],
                 "weight_decay": 0.0,
             },
         ]
@@ -261,13 +259,12 @@ class MerakTrainer:
         ) -> torch.optim.lr_scheduler:
 
         self.lr_scheduler = get_scheduler(
-                       self.args.lr_scheduler_type,
-                       optimizer=optimizer,
-                       num_warmup_steps=self.args.get_warmup_steps(
-                                             self.train_params.max_steps),
-                       num_training_steps=self.train_params.max_steps,
-                       scheduler_specific_kwargs=self.args.lr_scheduler_kwargs
-                       )
+            self.args.lr_scheduler_type,
+            optimizer=optimizer,
+            num_warmup_steps=self.args.get_warmup_steps(self.tuning_params.max_steps),
+            num_training_steps=self.tuning_params.max_steps,
+            scheduler_specific_kwargs=self.args.lr_scheduler_kwargs
+        )
         return self.lr_scheduler
 
     def get_dummy_inputs(self):
@@ -363,61 +360,66 @@ class MerakTrainer:
 
         return SummaryWriter(log_dir=log_dir)
 
-    def train(self):
-        self.train_engine = self.engine(
+    def init_engine(self, eval: bool = False):
+        self.engine = PipelineEngine(
             self.model,
             self.args,
-            optimizer=self.create_optimizer,
-            lr_scheduler=self.create_lr_scheduler,
-            tuning_params=self.train_params,
-            dataloader=self.train_dataloader,
+            optimizer=self.create_optimizer if not eval else None,
+            lr_scheduler=self.create_lr_scheduler if not eval else None,
+            tuning_params=self.tuning_params,
             loss_fn=self.loss_fn,
         )
-        self.train_engine.batch_fn = self.prepare_data
+
+    def train(self):
+        self.init_engine()
+        self.engine.batch_fn = self.prepare_data
 
         if self.args.resume_from_checkpoint:
             iteration = self.load_checkpoint(self.args.resume_from_checkpoint)
-            epochs_trained = self.train_params.resume(iteration)
+            epochs_trained = self.tuning_params.resume(iteration)
         else:
             iteration = 0
             epochs_trained = 0
 
         if self.args.lora_config:
-            self.peft_config = self.train_engine.module._add_lora_layers(self.model_config)
+            self.peft_config = self.engine.module._add_lora_layers(self.model_config)
+            self.engine._configure_model_and_optimizer(force=True)
             _ = self.load_checkpoint(self.args.resume_from_checkpoint, peft_config=self.peft_config)
 
-        self.train_params.logging()
+        self.tuning_params.logging()
 
         for epoch in range(epochs_trained, math.ceil(self.args.num_train_epochs)):
             if dist.get_rank() == 0:
                 print(f"\nEpoch: {epoch+1}/{math.ceil(self.args.num_train_epochs)}")
             # if hasattr(self.train_dataloader.batch_sampler, 'set_epoch'):
             #     self.train_dataloader.batch_sampler.set_epoch(epoch)
-            for step in range(self.train_params.num_steps_per_epoch):
-                self.train_params.step = step + 1
-                self.train_params.global_steps += 1
+            for step in range(self.tuning_params.num_steps_per_epoch):
+                self.tuning_params.step = step + 1
+                self.tuning_params.global_steps += 1
 
-                loss = self.train_engine.train_batch(self.train_dataloader)
+                loss = self.engine.train_batch(self.train_dataloader)
 
                 if self.summary_writer is not None:
                     self.summary_events = [
                         (f'Train/loss',
                          loss.mean().item(),
-                         self.train_params.global_steps),
+                         self.tuning_params.global_steps),
                         (f'Train/learning_rate',
-                         self.train_engine.optimizer.param_groups[0]['lr'].real,
-                         self.train_params.global_steps)
+                         self.engine.optimizer.param_groups[0]['lr'].real,
+                         self.tuning_params.global_steps)
                     ]
                     for event in self.summary_events:  # write_summary_events
                         self.summary_writer.add_scalar(event[0],
                                                        event[1],
                                                        event[2])
                 if self.args.output_dir and self.args.save and \
-                   self.train_params.global_steps % self.args.save_steps == 0:
+                   self.tuning_params.global_steps % self.args.save_steps == 0:
                     self.save_checkpoint()
                     self._rotate_checkpoints(self.args, self.args.output_dir)
 
-            self.train_engine.reset_dataiterator(self.train_dataloader)
+                if self.tuning_params.should_break():
+                    break
+
             if self.args.do_eval:
                 self.evaluation()
             if self.args.output_dir and self.args.save:
@@ -427,52 +429,45 @@ class MerakTrainer:
     def evaluation(self):
         assert self.eval_dataloader is not None, \
         "The eval_dataloader is None, Please check eval_dataset"
-        if self.eval_engine is None:
-            self.eval_engine = self.engine(
-                self.train_engine.module,
-                self.args,
-                optimizer=None,
-                lr_scheduler=None,
-                tuning_params=self.eval_params,
-                dataloader=self.eval_dataloader,
-                loss_fn=self.loss_fn
-            )
-            self.eval_engine.return_logits = True
+        if self.engine is None:
+            self.init_engine(eval=True)
 
-        if self.args.resume_from_checkpoint:
+        if self.args.resume_from_checkpoint and not self._already_load:
             iteration = self.load_checkpoint(self.args.resume_from_checkpoint)
 
         # eval_iterator = iter(eval_dataloader)
         print_rank_0("\nStart Evaluation...")
-        for step in range(self.eval_params.eval_steps):
-            self.eval_params.step += 1
-            self.eval_params.global_steps += 1
+        self.tuning_params.logging(eval=True)
+        for step in range(self.tuning_params.eval_steps):
+            self.tuning_params.eval_step += 1
+            self.tuning_params.global_eval_steps += 1
 
-            loss, logits, labels = self.eval_engine.eval_batch(
-                batch_fn=self.prepare_data
+            loss, logits, labels = self.engine.eval_batch(
+                batch_fn=self.prepare_data,
+                data_iter=self.eval_dataloader
             )
 
         if self.summary_writer is not None:
             self.summary_events = [
                 (f'Eval/loss',
                 loss.mean().item(),
-                self.eval_params.global_steps),
+                self.tuning_params.global_eval_steps),
             ]
             for event in self.summary_events:  # write_summary_events
                 self.summary_writer.add_scalar(event[0],
                                                event[1],
                                                event[2])
-        self.eval_engine.reset_dataiterator(self.eval_dataloader)
+        dist.barrier()
 
     def save_checkpoint(self, best_model: Any = None):
         kwargs = {"best_model": best_model,
                   "args": self.args,
                   "peft_config": self.peft_config
                   }
-        self._save_checkpoint(self.train_params.global_steps,
-                              self.train_engine.module,
-                              self.train_engine.optimizer,
-                              self.train_engine.lr_scheduler,
+        self._save_checkpoint(self.tuning_params.global_steps,
+                              self.engine.module,
+                              self.engine.optimizer,
+                              self.engine.lr_scheduler,
                               **kwargs)
 
     def load_checkpoint(
@@ -483,7 +478,7 @@ class MerakTrainer:
         if os.path.exists(resume_from_checkpoint):
             if peft_config:
                 load_results = checkpoint.load_peft_model_state_dict(
-                    self.train_engine.module,
+                    self.engine.module,
                     self.args,
                     peft_config,
                     verbose=True
@@ -491,13 +486,14 @@ class MerakTrainer:
                 return load_results
             else:
                 iteration, state_dict, opt_state_dict = self._load_checkpoint(
-                        self.train_engine.module,
-                        self.train_engine.optimizer,
-                        self.train_engine.lr_scheduler,
+                        self.engine.module,
+                        self.engine.optimizer,
+                        self.engine.lr_scheduler,
                         self.args,
                         verbose=True
                 )
                 del state_dict, opt_state_dict
+                self._already_load = True
                 return iteration
 
         else:

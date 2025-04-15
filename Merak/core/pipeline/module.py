@@ -131,6 +131,8 @@ class PipelineModule(nn.Module):
         self._topo = topology
         self._grid = communicaiton_grid
         self.dummy_inputs = dummy_inputs
+        if hasattr(model, "config"):
+            self.config = model.config
         if dist.get_rank() == 0:
             try:
                 seed_str = self.seed_fn.__name__
@@ -162,12 +164,19 @@ class PipelineModule(nn.Module):
         self._local_start = 0
         self._local_stop = None
 
+        model_parameters = filter(lambda p: p.requires_grad,
+                                  model.parameters())
+        self.total_num_params = sum([p.numel() for p in model_parameters])
+
         # trace model
         model_class = model.__class__
         if self.args.fp16:
             model = model.half()
         rebuild_module = ModuleRebuild(self.args, model, model_class)
-        layers, input_to_shard_dic = self._traced_module(model, leaf_modules)
+        if isinstance(model, nn.Sequential):
+            layers, input_to_shard_dic = (list(model), None)
+        else:
+            layers, input_to_shard_dic = self._traced_module(model, leaf_modules)
 
         # set tie module
         tie_dims = self._set_tie_dim(model)
@@ -211,6 +220,12 @@ class PipelineModule(nn.Module):
                 self.act_ckpt_ratio += [last_ratio] * (
                                         self.num_stages - len(self.act_ckpt_ratio)
                                     )
+        if self.args.split_method == 'nearest_min_deps' and self.args.activation_checkpointing:
+            # selective recompute based on layer params
+            param_counts = self.split_method._count_layer_params()
+            self.act_ckpt_interval = module_utils.partition_balanced(
+                weights=param_counts, 
+                num_parts=self._num_layers//self.num_stages)
         
         self._build(tie_dims, input_to_shard_dic)
 
@@ -255,8 +270,9 @@ class PipelineModule(nn.Module):
         self.tied_stage = collections.defaultdict(set)
 
         self.input_to_stage_dic = collections.defaultdict(list)
-        for input_name, shard_id in input_to_shard_dic.items():
-            self.input_to_stage_dic[self.stage_owner(shard_id)].append(input_name)
+        if input_to_shard_dic is not None:
+            for input_name, shard_id in input_to_shard_dic.items():
+                self.input_to_stage_dic[self.stage_owner(shard_id)].append(input_name)
 
         for layer_idx, layer in enumerate(specs):
             for m in layer.modules():
@@ -334,6 +350,7 @@ class PipelineModule(nn.Module):
         for p in self.parameters():
             p.model_parallel = True
 
+    @torch.no_grad
     def _broadcast_model(self):
 
         def is_replicated(p):
@@ -473,32 +490,50 @@ class PipelineModule(nn.Module):
             else:
                 num_layers = len(self.forward_funcs)
                 x = forward_input
-                for start_idx in range(0, 
-                                       num_layers, 
-                                       self.act_ckpt_interval):
-                    end_idx = min(start_idx + \
-                                  self.act_ckpt_interval,
-                                num_layers)
+                if isinstance(self.act_ckpt_interval, list):
+                    for i in range(len(self.act_ckpt_interval) - 1):
+                        start_idx = self.act_ckpt_interval[i]
+                        end_idx = self.act_ckpt_interval[i + 1]
+                        funcs = self.forward_funcs[start_idx:end_idx]
 
-                    funcs = self.forward_funcs[start_idx:end_idx]
-                    # Since we either pass tensors or tuples of tensors without 
-                    # unpacking, weneed to be careful not to double-wrap 
-                    # tensors with tuple.
-                    if not isinstance(x, tuple):
-                        x = (x, )
-                    if self._is_checkpointable(funcs) and \
-                        (self.stage_id < self.num_stages-1 or \
-                         end_idx !=num_layers):
-                        # print('checkpoint', 
-                        # self.stage_id,self.forward_funcs[start_idx:end_idx])
-                        x = self.act_ckpt_func(
-                            exec_range_func(start_idx,
-                                            end_idx),
-                            *x)
-                    else:
-                        # print('no checkpoint',
-                        # self.stage_id,self.forward_funcs[start_idx:end_idx])
-                        x = exec_range_func(start_idx, end_idx)(*x)
+                        if not isinstance(x, tuple):
+                            x = (x, )
+                        if self._is_checkpointable(funcs) and \
+                            (self.stage_id < self.num_stages-1 or \
+                            end_idx !=num_layers):
+                            x = self.act_ckpt_func(
+                                exec_range_func(start_idx,
+                                                end_idx),
+                                *x)
+                        else:
+                            x = exec_range_func(start_idx, end_idx)(*x)
+                else:
+                    for start_idx in range(0, 
+                                        num_layers, 
+                                        self.act_ckpt_interval):
+                        end_idx = min(start_idx + \
+                                    self.act_ckpt_interval,
+                                    num_layers)
+
+                        funcs = self.forward_funcs[start_idx:end_idx]
+                        # Since we either pass tensors or tuples of tensors without 
+                        # unpacking, weneed to be careful not to double-wrap 
+                        # tensors with tuple.
+                        if not isinstance(x, tuple):
+                            x = (x, )
+                        if self._is_checkpointable(funcs) and \
+                            (self.stage_id < self.num_stages-1 or \
+                            end_idx !=num_layers):
+                            # print('checkpoint', 
+                            # self.stage_id,self.forward_funcs[start_idx:end_idx])
+                            x = self.act_ckpt_func(
+                                exec_range_func(start_idx,
+                                                end_idx),
+                                *x)
+                        else:
+                            # print('no checkpoint',
+                            # self.stage_id,self.forward_funcs[start_idx:end_idx])
+                            x = exec_range_func(start_idx, end_idx)(*x)
         return x
 
     def _partition_layers(self, input_to_shard_dic: Optional[Dict[str, int]] = None):
@@ -539,6 +574,7 @@ class PipelineModule(nn.Module):
             weight = getattr(self.tied_modules[key], comm['weight_attr'])
             dist.all_reduce(weight.grad, group=comm['group'])
 
+    @torch.no_grad
     def _synchronize_tied_weights(self):
         for key, comm in self.tied_comms.items():
             dist.broadcast(
@@ -666,4 +702,5 @@ class PipelineModule(nn.Module):
                                       VocabParallelEmbedding)):
                         return False
         params = [f.parameters() for f in funcs if isinstance(f, torch.nn.Module)]
+
         return any(len(list(p)) > 0 for p in params)

@@ -31,7 +31,6 @@ import torch.distributed as dist
 from collections import OrderedDict
 from typing import Optional, Tuple, Callable, Union, List, Dict
 from dataclasses import asdict
-from numpy.lib import utils
 from pathlib import Path
 
 from Merak import print_rank_0
@@ -40,7 +39,8 @@ from .utils import (
     unwrap_model,
     same_layer_idx,
     get_zero_param_shapes,
-    PeftType
+    PeftType,
+    ShardedSafetensorLoader
 )
 from .. import mpu
 from ..recompute import get_rng_tracker
@@ -249,7 +249,8 @@ def save_checkpoint(
             state_dict['random_rng_state'] = random.getstate()
             state_dict['np_rng_state'] = np.random.get_state()
             state_dict['torch_rng_state'] = torch.get_rng_state()
-            state_dict['cuda_rng_state'] = torch.cuda.get_rng_state()
+            if torch.cuda.is_available():
+                state_dict['cuda_rng_state'] = torch.cuda.get_rng_state()
             state_dict['rng_tracker_states'] \
                 = get_rng_tracker().get_states()
 
@@ -336,10 +337,8 @@ def load_checkpoint(
     model = unwrap_model(model)
 
     # get transformers checkpoint file
-    checkpoint_name = find_tf_checkpoint_files(
-                        load_dir,
-                        TRANSFORMERS_MODEL_NAME[0]
-                    )
+    checkpoint_name = detect_checkpoint_format(load_dir)
+
     if checkpoint_name is None:
         # Read the tracker file and set the iteration.
         tracker_filename = get_checkpoint_tracker_filename(load_dir)
@@ -379,7 +378,12 @@ def load_checkpoint(
     if mpu.get_data_parallel_rank() == 0:
         print(checkpoint_name)
     try:
-        state_dict = torch.load(checkpoint_name, map_location='cpu')
+        if "safetensor" not in checkpoint_name:
+            state_dict = torch.load(checkpoint_name, map_location='cpu')
+        else:
+            state_dict = ShardedSafetensorLoader(
+                model, args.resume_from_checkpoint
+            ).get_state_dict()
     except BaseException as e:
         print_rank_0('could not load the checkpoint')
         print_rank_0(e)
@@ -469,7 +473,8 @@ def load_checkpoint(
             random.setstate(state_dict['random_rng_state'])
             np.random.set_state(state_dict['np_rng_state'])
             torch.set_rng_state(state_dict['torch_rng_state'])
-            torch.cuda.set_rng_state(state_dict['cuda_rng_state'])
+            if torch.cuda.is_available():
+                torch.cuda.set_rng_state(state_dict['cuda_rng_state'])
             # Check for empty states array
             if not state_dict['rng_tracker_states']:
                 raise KeyError
@@ -506,7 +511,10 @@ def _sorted_checkpoints(
     for path in glob_checkpoints:
         if not os.listdir(path):
             print_rank_0(f"Deleting empty checkpoint dirctory [{path}]")
-            shutil.rmtree(path)
+            try:
+                shutil.rmtree(path)
+            except FileNotFoundError:
+                pass
         if "best_ckpt" in path:
             continue
         for x in Path(path).glob("iter_*"):
@@ -545,16 +553,35 @@ def rotate_checkpoints(args, output_dir: Optional[str] = None):
             shutil.rmtree(checkpoint)
     dist.barrier()
 
+def detect_checkpoint_format(model_dir=".", peft=False):
+    """
+    检测模型目录的检查点格式类型
+    :param model_dir: 模型文件夹路径，默认为当前目录
+    :return: "pytorch_bin" | "safetensors" | "both" | "none"
+    """
+    # 构造完整文件路径
+    pytorch_bin = os.path.join(model_dir, TRANSFORMERS_MODEL_NAME[0])
+    adapter = os.path.join(model_dir, TRANSFORMERS_MODEL_NAME[1])
+    safetensors = os.path.join(model_dir, "model.safetensors.index.json")
 
+    # 检查文件存在性
+    has_pytorch = os.path.isfile(pytorch_bin)
+    has_adapter = os.path.isfile(adapter)
+    has_safe = os.path.isfile(safetensors)
 
-def find_tf_checkpoint_files(path: str, model_name: str) -> Optional[List[str]]:
-    for root, dirs, files in os.walk(path):
-        tf_ckpt_file = set(files).intersection(set(TRANSFORMERS_MODEL_NAME))
-        if tf_ckpt_file:
-            for file in tf_ckpt_file:
-                if model_name in file:
-                    return os.path.join(root, file)
-    return None
+    # 判断结果
+    if has_pytorch and has_safe:
+        raise ValueError(
+            "The path of resume_from_checkpoint has at least 2 type of checkpint file."
+        )
+    elif has_pytorch and not peft:
+        return pytorch_bin
+    elif has_adapter and peft:
+        return adapter
+    elif has_safe and not peft:
+        return safetensors
+    else:
+        return None
 
 
 def check_state_dict(
@@ -584,7 +611,12 @@ def check_state_dict(
                 mk = ".".join(split_mk)
                 uk = ".".join(split_uk)
                 min_len = min(len(split_mk), len(split_uk))
-                if mk == uk or new_keys[i] == old_keys[j]:
+                if split_mk == split_uk[2:] or split_mk == split_uk[1:]:
+                    new_state_dict[new_keys[i]] = state_dict[old_keys[j]]
+                    # print(new_keys[i], old_keys[j],
+                    #       mpu.get_pipe_parallel_rank())
+                    break
+                elif mk == uk or new_keys[i] == old_keys[j]:
                     new_state_dict[new_keys[i]] = state_dict[old_keys[j]]
                     # print(new_keys[i], old_keys[j], 
                     #       mpu.get_pipe_parallel_rank())
@@ -603,6 +635,9 @@ def check_state_dict(
                     break
 
         return new_state_dict
+
+    if "model" in old_state_dict.keys():
+        old_state_dict = old_state_dict['model']
 
     convert_state_dict = convert_key(new_keys, old_keys, old_state_dict)
 
@@ -645,19 +680,17 @@ def load_peft_model_state_dict(
         peft_config,
         verbose: bool = False
     ) -> OrderedDict:
-    load_dir = args.resume_from_checkpoint
-    filename = find_tf_checkpoint_files(
-        load_dir,
-        TRANSFORMERS_MODEL_NAME[1]
-    )
 
-    if not os.path.isfile(filename):
+    load_dir = args.resume_from_checkpoint
+    filename = detect_checkpoint_format(load_dir, peft=True)
+
+    if filename is None:
         # Read the tracker file and set the iteration.
         tracker_filename = get_checkpoint_tracker_filename(load_dir)
         if not os.path.isfile(tracker_filename):
             if mpu.get_data_parallel_rank() == 0:
-                print(f'WARNING ! The path {args.resume_from_checkpoint} \
-                    has no lora model files {filename}')
+                print(f'WARNING ! The path {args.resume_from_checkpoint} '
+                      f'has no lora model files {filename}')
                 return
         iteration, release = read_metadata(tracker_filename)
         filename, _ = get_checkpoint_name(load_dir, iteration,
@@ -710,10 +743,11 @@ def get_peft_model_state_dict(model, peft_config, state_dict=None) -> Dict[str, 
                         to_return[bias_name] = state_dict[bias_name]
         else:
             raise NotImplementedError
-        for ms in modules_to_save:
-            for k in state_dict:
-                if ms in k:
-                    to_return[k] = state_dict[k]
+        if modules_to_save is not None:
+            for ms in modules_to_save:
+                for k in state_dict:
+                    if ms in k:
+                        to_return[k] = state_dict[k]
 
     else:
         raise NotImplementedError

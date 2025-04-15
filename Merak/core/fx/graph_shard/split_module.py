@@ -62,6 +62,7 @@ def split_module(
         root_m: torch.nn.Module,
         split_callback: Callable[[torch.fx.node.Node], int],
         merge_nearest=None,
+        total_params=None
     ) -> Tuple[List[GraphModule], Dict[str, int]]:
     """
     Adapted from https://github.com/pytorch/pytorch/blob/master/torch/fx/passes/split_module.py
@@ -253,7 +254,7 @@ def split_module(
         raise RuntimeError("cycle exists between partitions!")
 
     if merge_nearest is not None:
-        min_deps_partitions = merge_nearest(m, partition_name, partitions)
+        min_deps_partitions = merge_nearest(m, partition_name, partitions, total_params)
     else:
         min_deps_partitions = partitions
 
@@ -324,4 +325,4 @@ def split_module(
 
         submod_list.append(submod)
 
-    return submod_list, func_inputs
+    return submod_list, func_inputs, min_deps_partitions

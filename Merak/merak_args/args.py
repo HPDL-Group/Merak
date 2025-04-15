@@ -92,7 +92,6 @@ class MerakArguments(TrainingArguments):
     -   no_tie_modules (bool, defaults to False) -- Whether to set tie modules.
     -   save_total_limit (int, defaults to -1) -- Limit the max numbers of checkpoints.
     -   eval_iters (int, defaults to None) -- Number of iterations to run for evaluationvalidation/test for.
-    -   text_generation (bool, Optional, defaults to False) -- Whether to do text generate.
     -   out_seq_length (int, Optional, defaults to 1024) -- The maximum sequence length that this model's output. Defaults to 1024.
     -   temperature (float, Optional, defaults to 0.9) -- Sampling temperature.
     -   lora_config (str, Optional, defaults to None) -- Set lora config path.
@@ -472,22 +471,7 @@ class MerakArguments(TrainingArguments):
             "Default to -1.",
         },
     )
-    eval_iters: Optional[int] = field(
-        default=-1,
-        metadata={
-            "help": "Number of iterations to run for evaluation/validation/test"
-                    "Default to -1.",
-        },
-    )
 
-    # text generation
-    text_generation: bool = field(
-        default=False,
-        metadata={
-            "help": "Whether to do text generate"
-                    "Default to False.",
-        },
-    )
     out_seq_length: int = field(
         default=1024,
         metadata={
@@ -570,7 +554,7 @@ def get_args() -> MerakArguments:
 
 args_dict = {
     "seq_length": ['seq_length', 'max_position_embeddings', 'n_positions', 'embed_dim',
-                   'max_target_positions', 'num_conv_pos_embeddings'],
+                   'max_target_positions'],
     "num_heads": ['num_attention_heads', 'n_head', 'num_heads'],
     "hidden_size": ['hidden_size', 'dim', 'n_embd', 'd_model', 'hidden_sizes'],
     "num_layers": ['num_hidden_layers', 'n_layers', 'num_layers'],
@@ -609,8 +593,7 @@ def mergeargs(training_args: MerakArguments, model_config: Union[PretrainedConfi
 
     for n, name_list in args_dict.items():
         if getattr(training_args, n) is None:
-            if hasattr(model_config, 'text_config'):
-                model_config = model_config.text_config
+            model_config = getattr(model_config, 'text_config', model_config)
             for name in name_list:
                 if hasattr(model_config, name):
                     values = getattr(model_config, name)

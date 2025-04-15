@@ -21,6 +21,7 @@ from contextlib import contextmanager
 
 import torch
 import torch.nn as nn
+from transformers import Conv1D
 
 @contextmanager
 def init_empty_weights():
@@ -66,7 +67,7 @@ def init_on_device(device: torch.device):
         param: torch.Tensor
         ):
         old_register_parameter(module, name, param)
-        if isinstance(module, (nn.Embedding, nn.Linear)):
+        if isinstance(module, (nn.Embedding, nn.Linear, Conv1D)):
             if param is not None:
                 param_cls = type(module._parameters[name])
                 kwargs = module._parameters[name].__dict__

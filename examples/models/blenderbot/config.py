@@ -1,0 +1,66 @@
+def load_config(model_name):
+    if model_name == "blenderbot-400M-distill":
+        config = {
+            "_name_or_path": "./",
+            "activation_dropout": 0.0,
+            "activation_function": "gelu",
+            "add_bias_logits": False,
+            "add_final_layer_norm": True,
+            "architectures": [
+                "BlenderbotForConditionalGeneration"
+            ],
+            "attention_dropout": 0.0,
+            "bos_token_id": 1,
+            "classif_dropout": 0.0,
+            "classifier_dropout": 0.0,
+            "d_model": 1280,
+            "decoder_attention_heads": 32,
+            "decoder_ffn_dim": 5120,
+            "decoder_layerdrop": 0.0,
+            "decoder_layers": 12,
+            "decoder_start_token_id": 1,
+            "do_blenderbot_90_layernorm": True,
+            "dropout": 0.1,
+            "encoder_attention_heads": 32,
+            "encoder_ffn_dim": 5120,
+            "encoder_layerdrop": 0.0,
+            "encoder_layers": 2,
+            "encoder_no_repeat_ngram_size": 3,
+            "eos_token_id": 2,
+            "extra_layer_norm": False,
+            "extra_pos_embeddings": 0,
+            "force_bos_token_to_be_generated": False,
+            "forced_eos_token_id": 2,
+            "gradient_checkpointing": False,
+            "id2label": {
+                "0": "LABEL_0",
+                "1": "LABEL_1",
+                "2": "LABEL_2"
+            },
+            "init_std": 0.02,
+            "is_encoder_decoder": True,
+            "label2id": {
+                "LABEL_0": 0,
+                "LABEL_1": 1,
+                "LABEL_2": 2
+            },
+            "layernorm_variant": "prelayernorm",
+            "length_penalty": 0.65,
+            "max_length": 60,
+            "max_position_embeddings": 128,
+            "min_length": 20,
+            "model_type": "blenderbot",
+            "no_repeat_ngram_size": 3,
+            "normalize_before": True,
+            "normalize_embedding": False,
+            "num_beams": 10,
+            "num_hidden_layers": 2,
+            "pad_token_id": 0,
+            "scale_embedding": True,
+            "static_position_embeddings": False,
+            "transformers_version": "4.13.0.dev0",
+            "unk_token_id": 3,
+            "use_cache": True,
+            "vocab_size": 8008
+            }
+    return config

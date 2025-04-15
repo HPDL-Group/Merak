@@ -94,7 +94,10 @@ def reset_module_tensor(
 
     is_buffer = tensor_name in module._buffers
     old_value = getattr(module, tensor_name)
-    param_cls = type(module._parameters[tensor_name])
+    if "_tensor_constant" not in tensor_name:
+        param_cls = type(module._parameters[tensor_name])
+    if "_tensor_constant1" in tensor_name:  # for llama
+        value = value.long()
     with torch.no_grad():
         new_value = value.to(device)
         if is_buffer:

@@ -43,8 +43,8 @@ def parse_option(parser):
 def main():
 
     # init dist
-    pp = 4
-    tp = 1
+    pp = 2
+    tp = 2
     dp = 1
     Merak.init(pp, tp, dp)
 
@@ -59,7 +59,7 @@ def main():
     # load data
     config = GPT2Config(n_layer=4,
                         vocab_size=50344,
-                        reorder_and_upcast_attn=False, use_cache=False)
+                        reorder_and_upcast_attn=False, use_cache=False, _attn_implementation="eager")
 
     # create model
     with init_empty_weights():

@@ -17,6 +17,10 @@
 
 import os
 import enum
+import json
+from pathlib import Path
+from typing import Dict
+from safetensors import safe_open
 from collections import OrderedDict
 from typing import List, Union
 
@@ -97,4 +101,53 @@ class PeftType(str, enum.Enum):
     IA3 = "IA3"
     LOHA = "LOHA"
 
+class ShardedSafetensorLoader:
+    def __init__(
+            self,
+            model,
+            model_dir: str = ".",
+            index_file: str = "model.safetensors.index.json"
+        ):
+        self.model = model
+        self.model_dir = Path(model_dir)
+        self.index = self._load_index(index_file)
+        self.cached_files: Dict[str, dict] = {}  # 缓存已加载的分片文件
 
+    def _load_index(self, index_file: str) -> dict:
+        """加载分片索引文件"""
+        index_path = self.model_dir / index_file
+        if not index_path.exists():
+            raise FileNotFoundError(f"索引文件不存在: {index_path}")
+
+        with open(index_path, "r") as f:
+            return json.load(f)["weight_map"]  # 提取权重映射表
+
+    def _get_tensor(self, layer_name: str) -> torch.Tensor:
+        """按层名获取张量"""
+        if layer_name not in self.index:
+            raise KeyError(f"权重 {layer_name} 不存在于索引文件中")
+
+        shard_file = self.index[layer_name]
+        if shard_file not in self.cached_files:
+            # 延迟加载分片文件
+            shard_path = self.model_dir / shard_file
+            if not shard_path.exists():
+                raise FileNotFoundError(f"分片文件 {shard_file} 不存在")
+
+            with safe_open(shard_path, framework="pt") as f:
+                self.cached_files[shard_file] = {k: f.get_tensor(k) for k in f.keys()}
+
+        return self.cached_files[shard_file][layer_name]
+
+    def get_state_dict(self):
+        weights = {}
+        state_dict_keys = list(self.model.state_dict().keys())
+        for k in state_dict_keys:
+            split_k = k.split('.')
+            del split_k[0]
+            new_k = ".".join(split_k)
+            try:
+                weights[k] = self._get_tensor(new_k)
+            except KeyError:
+                continue
+        return weights

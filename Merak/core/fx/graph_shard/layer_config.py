@@ -37,7 +37,10 @@ def get_split_points(config: Type[PretrainedConfig]) -> List[str]:
     args = get_args()
     split_points = []
 
-    if "gpt2" == config.model_type:
+    if args.custom_split_points is not None:
+        assert isinstance(args.custom_split_points, list)
+        split_points = args.custom_split_points
+    elif "gpt2" == config.model_type:
         for i in range(config.num_hidden_layers):
             split_points.append(f"transformer.h.{i}")
         split_points.append("transformer.ln_f")
@@ -172,9 +175,6 @@ def get_split_points(config: Type[PretrainedConfig]) -> List[str]:
         for i in range(config.num_hidden_layers):
             split_points.append(f"model.layers.{i}")
         split_points.append("lm_head")
-    elif args.custom_split_points is not None:
-        assert isinstance(args.custom_split_points, list)
-        split_points = args.custom_split_points
 
     assert (
         split_points
@@ -263,5 +263,5 @@ def layer_config_split(
         layer_config_mapping(traced_graph_module, split_points)
     
     # split graph
-    module_list, func_inputs = split_module(traced_graph_module, model, node_name_to_shard_id)
+    module_list, func_inputs, _ = split_module(traced_graph_module, model, node_name_to_shard_id)
     return module_list, func_inputs

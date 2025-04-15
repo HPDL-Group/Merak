@@ -72,10 +72,10 @@ def set_mp_attr(model: torch.nn.Module, mp: int) -> torch.nn.Module:
        
                     # for case that changes Conv1DProxy, LinearProxy
                     else:
-                        if d == 1:
+                        if d == 0:
                             setattr(m, 'mp_attr', 'col')
                             m.out_features //= mp
-                        elif d == 0:
+                        elif d == 1:
                             setattr(m, 'mp_attr', 'row')
                             m.in_features //= mp
                         else:

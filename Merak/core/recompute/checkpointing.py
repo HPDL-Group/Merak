@@ -611,6 +611,8 @@ class RNGManager:
         bwd_cpu_rng_state = torch.get_rng_state()
         if torch.cuda.is_available():
             bwd_cuda_rng_state = torch.cuda.get_rng_state()
+        else:
+            bwd_cuda_rng_state = None
         bwd_rng_state_tracker = get_rng_tracker().get_states()
 
         # Set the states to what it used to be before the forward pass.

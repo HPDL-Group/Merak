@@ -29,7 +29,7 @@ torchrun --nproc_per_node=4 \
                --per_device_train_batch_size 1 --gradient_accumulation_steps 1 \
                --resume_from_checkpoint output/transformers_model \
                --activation_checkpointing false --checkpoint_num_layers 0 \
-               --return_logits true --no_tie_modules true --text_generation true --seed 42 \
+               --no_tie_modules true --seed 42 \
                --split_method layer_split
 ```
 

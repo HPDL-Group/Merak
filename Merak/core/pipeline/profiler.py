@@ -516,7 +516,7 @@ def _silu_flops_compute(input: Tensor, inplace: bool = False):
     return torch.numel(input), 0
 
 
-def _gelu_flops_compute(input):
+def _gelu_flops_compute(input, approximate = None):
     return torch.numel(input), 0
 
 

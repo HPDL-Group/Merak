@@ -256,7 +256,7 @@ class ColumnParallelLinear(torch.nn.Module):
             # All-gather across the partitions.
             output = gather_from_model_parallel_region(output_parallel)
         else:
-            output = output_parallel 
+            output = output_parallel
         output_bias = self.bias if self.skip_bias_add else None
         return output, output_bias
     
