@@ -219,7 +219,7 @@ torchrun $DISTRIBUTED_ARGS finetune.py \
     --save_steps 10 \  # Save every 10 steps
     --seq_length 2048 \  # Training sequence length
     --lora_config './lora_config.json' \  # LoRA configuration file path
-    --model_path './deepseek-r1/models/DeepSeek-R1-Distill-Llama-8B' \  # Base model path
+    --model_path './deepseek-r1/models/DeepSeek-R1-Distill-Llama-8B' \  # Base model path (must download weights/configs from huggingface if not present locally)
     --resume_from_checkpoint './deepseek-r1/models/DeepSeek-R1-Distill-Llama-8B' \  # Base model weights path
     --resume_peft_from_checkpoint './lora_checkpoint'  # LoRA fine-tuned weights path
 ```
