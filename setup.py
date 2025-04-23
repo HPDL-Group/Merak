@@ -77,7 +77,7 @@ setup(
     # There are some restrictions on what makes a valid project name
     name='Merak',  # Required
 
-    version="2.2.0",  # Required
+    version="2.2.1",  # Required
 
     # This is a one-line description or tagline of what your project does. 
     description='A framework for 3D parallelism',  # Required

@@ -19,6 +19,7 @@
 import torch
 import torch.nn as nn
 import torch.fx
+import torch.nn.init as init
 from typing import List, Tuple, Callable
 
 from transformers.pytorch_utils import Conv1D
@@ -42,12 +43,16 @@ class ModuleRebuild:
     def __init__(self, args, model: List[torch.fx.GraphModule], model_class: Callable):
         self.args = args
         # self.device = model.device
+        self.init_method = model._init_weights
         if not isinstance(model, list):
             model = [model]
         self.model = model
         self.model_class = model_class #self.model.__class__
         self.mp_size = mpu.get_model_parallel_world_size()
         self.init_method = init_method_normal(self.args.init_method_std)
+        self.scaled_init_method = scaled_init_method_normal(
+            self.args.init_method_std, self.args.num_layers
+        )
         
         set_random_seed(self.args.seed)
         if self.args.tp_overlapping_level > 1:
@@ -72,29 +77,27 @@ class ModuleRebuild:
             set_mp_attr(model, self.mp_size)
         # self.model = set_mp_attr(self.model, self.mp_size)
 
-    def build_parallel_layers(self, n, module, init_args):
+    def build_parallel_layers(self, n, module):
         if isinstance(module, nn.Linear) or n in ['c_attn', 'c_proj', 'c_fc']:
             _bias = module.bias if isinstance(module.bias, bool) else isinstance(module.bias, torch.Tensor)
             if not hasattr(module, 'mp_attr'):
                 return module
             elif module.mp_attr.startswith('row'):
                 module_args = [module.in_features * self.mp_size, module.out_features]
-                init_method = scaled_init_method_normal(*init_args)
                 if module.mp_attr == 'row_mlp':
                     return RowPara(module_args[0], module_args[1],
-                                init_method, bias=_bias)
+                                self.scaled_init_method, bias=_bias)
                 else:
                     return RowPara(module_args[0], module_args[1],
-                                init_method, bias=_bias, need_permute=False)
+                                self.scaled_init_method, bias=_bias, need_permute=False)
             elif module.mp_attr.startswith('col'):
                 module_args = [module.in_features, module.out_features * self.mp_size]
-                init_method = init_method_normal(init_args[0])
                 if module.mp_attr == 'col_mlp':
                     return ColPara(module_args[0], module_args[1],
-                                init_method, bias=_bias)
+                                self.init_method, bias=_bias)
                 else:
                     return ColPara(module_args[0], module_args[1],
-                                init_method, bias=_bias, need_permute=False)
+                                self.init_method, bias=_bias, need_permute=False)
         elif isinstance(module, nn.Conv2d):
             module_args = module.__dict__
             if not hasattr(module, 'mp_attr'):
@@ -105,43 +108,34 @@ class ModuleRebuild:
 
     def recover_module(self, module):
         self.model = module
-        def build_module(model, init_args):
+        def build_module(model):
             for n, module in model.named_children():
                 # if isinstance(module, layer_cls):
-                parallel_layer = self.build_parallel_layers(n, module, init_args)
+                parallel_layer = self.build_parallel_layers(n, module)
                 if parallel_layer is not None:
                     setattr(model, n, parallel_layer)
                 if len(list(module.children())) > 0:
                     # compound module, go inside it
-                    build_module(module, init_args)
+                    build_module(module)
 
-        build_module(self.model, (self.args.init_method_std, self.args.num_layers))
+        build_module(self.model)
 
         # reset parameters if the device is meta
+        should_reinit = False
         for param_name, param in self.model.named_parameters():
-            normal_param = torch.empty(param.shape).normal_(mean=0.0,
-                                                            std=self.args.init_method_std)
             if str(param.device) == 'meta':
-                lower_name = param_name.lower()
-                if ('norm' in lower_name or 'ln' in lower_name) and lower_name.endswith('weight'):
-                    reset_module_tensor(
-                        self.model, param_name, torch.device('cpu'), torch.ones(param.shape)
-                    )
-                elif 'embed' in lower_name:
-                    reset_module_tensor(
-                        self.model, param_name, torch.device('cpu'), normal_param
-                    )
-                else:
-                    reset_module_tensor(
-                        self.model, param_name, torch.device('cpu'), torch.zeros(param.shape)
-                    )
+                reset_module_tensor(
+                    self.model, param_name, torch.device('cpu'), torch.zeros(param.shape)
+                )
+                should_reinit = True
+
         for buffer_name, buffer in self.model.named_buffers():
             if str(buffer.device) == 'meta':
                 reset_module_tensor(
                     self.model, buffer_name, torch.device('cpu'), torch.rand(buffer.shape)
                 )
 
-        # return self.model
+        return should_reinit
 
     def sequence_parallel(self):
         if self.args.sequence_parallel:

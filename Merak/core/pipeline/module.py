@@ -123,6 +123,7 @@ class PipelineModule(nn.Module):
 
         super().__init__()
 
+        self.init_method = model._init_weights
         self.args = args
         self.loss_fn = loss_fn
         self.seed_layers = seed_layers
@@ -229,7 +230,9 @@ class PipelineModule(nn.Module):
         
         self._build(tie_dims, input_to_shard_dic)
 
-        rebuild_module.recover_module(self)
+        should_reinit = rebuild_module.recover_module(self)
+        if should_reinit:
+            self.apply(self.init_method)
         rebuild_module.vocab_parallel(emb_dim=tie_dims)
 
         del model, layers
