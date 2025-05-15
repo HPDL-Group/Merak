@@ -45,7 +45,7 @@ with open(path.join(here, 'README.md'), encoding='utf-8') as f:
 install_requires = [
     'torch>=2.0.0',
     'torchvision>=0.11.1',
-    'transformers>=4.22.0',
+    'transformers>4.20.0,<=4.47.0',
     'python-dateutil>=2.1',
     'psutil',
     'tensorboardX>=1.8',
@@ -77,7 +77,7 @@ setup(
     # There are some restrictions on what makes a valid project name
     name='Merak',  # Required
 
-    version="2.2.1",  # Required
+    version="2.2.2",  # Required
 
     # This is a one-line description or tagline of what your project does. 
     description='A framework for 3D parallelism',  # Required

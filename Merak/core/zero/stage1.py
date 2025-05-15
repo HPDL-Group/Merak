@@ -301,7 +301,6 @@ class ZeroOptimizer_Stage1(object):
 
         self.overflow = False
         self.overflow_checker = CheckOverflow(self.fp16_groups,
-                                              mpu=self.mpu,
                                               zero_reduce_scatter=True)
 
     @staticmethod

@@ -625,6 +625,8 @@ class CommunicationEngine:
     def communication_data_type(self) -> torch.dtype:
         if self.args.fp16:
             return torch.float16
+        elif self.args.bf16:
+            return torch.bfloat16
         return torch.float32
 
 
@@ -737,12 +739,6 @@ class NetCalculationEngine:
 
     def _exec_forward_pass(self, buffer_id: int):
         mem_status('BEFORE FWD', reset_max=True)
-
-        if self.timers('backward_microstep').started_ and \
-           self.timers('backward').started_ and \
-           self.pipeline.is_last_stage():
-            self.timers('backward_microstep').stop()
-            self.timers('backward').stop()
 
         inputs = self.pipeline.pipe_buffers['inputs'][buffer_id]
         _zero_grads(inputs)
@@ -930,13 +926,6 @@ class NetCalculationEngine:
                 self.pipeline.optimizer.backward(self.loss)
             else:
                 self.loss.backward()
-
-            self.timers('backward_inner').stop()
-            self.timers('backward_inner_microstep').stop()
-            mem_status('AFTER BWD')
-
-            self.pipeline.tuning_params.micro_steps += 1
-
         else:
             outputs = self.pipeline.pipe_buffers['outputs'][buffer_id]
 
@@ -964,15 +953,15 @@ class NetCalculationEngine:
             self.pipeline.pipe_buffers['outputs'][buffer_id] = None
             grad_tensors = None
 
-            if self.args.wall_clock_breakdown:
-                self.timers('backward_microstep').stop()
-                self.timers('backward').stop()
-                self.timers('backward_inner').stop()
-                self.timers('backward_inner_microstep').stop()
+        if self.args.wall_clock_breakdown:
+            self.timers('backward_microstep').stop()
+            self.timers('backward').stop()
+            self.timers('backward_inner').stop()
+            self.timers('backward_inner_microstep').stop()
 
-            self.pipeline.tuning_params.micro_steps += 1
+        self.pipeline.tuning_params.micro_steps += 1
 
-            mem_status('AFTER BWD')
+        mem_status('AFTER BWD')
 
     def _exec_optimizer_step(self, lr_kwargs: Optional[dict] = None):
         if self.args.wall_clock_breakdown:
@@ -1182,7 +1171,7 @@ class PipelineEngine:
             self.optimizer = self.optimizer(self.module)
             self.lr_scheduler = self.lr_scheduler(self.optimizer)
 
-        if self.args.fp16 or self.args.half_precision_backend == 'apex':
+        if self.args.fp16 or self.args.bf16 or self.args.half_precision_backend == 'apex':
             self.module, self.optimizer = amp_engine.configure(
                 self.optimizer, self.module, self.device
             )
@@ -1234,7 +1223,8 @@ class PipelineEngine:
                 f'instead.')
 
         # set iter dataloader
-        if self.data_iterator is None:
+        _recreate_iterdata =  not self.netcal_engine.do_train
+        if self.data_iterator is None or _recreate_iterdata:
             self.data_iterator = RepeatingLoader(data_iter) if data_iter is not None else None
 
         self.module.train()
@@ -1245,7 +1235,6 @@ class PipelineEngine:
         # Do the work
         self.timers('train_batch').start()
 
-        
         self._exec_schedule(self.train_sched)
         self.agg_train_loss = self.comm_engine._aggregate_total_loss(
                                                         self.total_loss)

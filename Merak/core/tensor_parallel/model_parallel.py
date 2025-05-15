@@ -43,7 +43,6 @@ class ModuleRebuild:
     def __init__(self, args, model: List[torch.fx.GraphModule], model_class: Callable):
         self.args = args
         # self.device = model.device
-        self.init_method = model._init_weights
         if not isinstance(model, list):
             model = [model]
         self.model = model

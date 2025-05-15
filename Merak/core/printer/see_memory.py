@@ -91,6 +91,9 @@ def see_memory_usage(
     # torch.distributed.barrier(group=group)
     # get the peak memory to report correct data, so reset the counter for the
     # next call
-    if not USE_CPU:
+    if USE_CPU:
+        if hasattr(torch_ft.utils, "reset_dsp_peak_mem_stats"):
+            torch_ft.utils.reset_dsp_peak_mem_stats()
+    else:
         if hasattr(torch.cuda, "reset_peak_memory_stats"):  # pytorch 1.4+
             torch.cuda.reset_peak_memory_stats()

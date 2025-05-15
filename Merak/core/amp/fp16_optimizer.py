@@ -42,21 +42,14 @@ class FP16_Optimizer(object):
     def __init__(
             self,
             init_optimizer,
-            deepspeed=None,
             static_loss_scale=1.0,
             dynamic_loss_scale=False,
             dynamic_loss_args=None,
             verbose=False,
-            mpu=None,
             clip_grad=0.0,
-            fused_lamb_legacy=False
         ):
 
-        self.fused_lamb_legacy = fused_lamb_legacy
         self._global_grad_norm = 0.
-
-        if torch.distributed.get_rank() == 0:
-            logger.info(f'Fused Lamb Legacy : {self.fused_lamb_legacy} ')
 
         if not torch.cuda.is_available:
             raise SystemError("Cannot use fp16 without CUDA.")
@@ -109,13 +102,9 @@ class FP16_Optimizer(object):
         self.clip_grad = clip_grad
         self.norm_type = 2
 
-        self.mpu = mpu
-
         self.overflow = False
         self.overflow_checker = CheckOverflow(
             self.fp16_groups,
-            mpu=self.mpu,
-            deepspeed=deepspeed
         )
 
         self.initialize_optimizer_states()
@@ -135,72 +124,10 @@ class FP16_Optimizer(object):
                         p.grad.detach_()
                         p.grad.zero_()
 
-    def step_fused_lamb(self, closure=None):
-        """
-        Not supporting closure.
-        """
-        # First compute norm for all group so we know if there is overflow
-        grads_groups_flat = []
-        grads_groups = []
-        norm_groups = []
-        for i, group in enumerate(self.fp16_groups):
-            grads = [
-                torch.zeros(
-                    p.size(),
-                    dtype=p.dtype,
-                    device=p.device
-                ) if p.grad is None else p.grad for p in group
-            ]
-            grads_groups.append(grads)
-            grads_groups_flat.append(_flatten_dense_tensors(grads))
-            grads_for_norm = split_params_grads_into_shared_params(group)
-            norm_group_value = 0.0
-            if len(grads_for_norm) > 0:
-                norm_group_value = get_weight_norm(
-                    _flatten_dense_tensors(grads_for_norm),
-                    mpu=self.mpu
-                )
-            norm_groups.append(norm_group_value)
-
-
-        self.overflow = self.overflow_checker.check_using_norm(norm_groups)
-        prev_scale = self.cur_scale
-
-        self._update_scale(self.overflow)
-        if self.overflow:
-            if self.verbose:
-                logger.info(
-                    "[deepspeed] fp16 dynamic loss scale overflow! Skipping step. Attempted loss "
-                    "scale: {}, reducing to {}".format(prev_scale, self.cur_scale))
-            return self.overflow
-
-        self._global_grad_norm = get_global_norm(norm_list=norm_groups)
-        combined_scale = self.unscale_and_clip_grads(self._global_grad_norm, apply_scale=False)
-        self.optimizer.step(
-            grads=grads_groups,
-            output_params=self.fp16_groups,
-            scale=combined_scale
-        )
-
-        for fp32_group, fp16_group in zip(self.fp32_groups, self.fp16_groups):
-            for idx, (fp32_param, fp16_param) in enumerate(zip(fp32_group, fp16_group)):
-
-                #remove the fp32 grad
-                fp32_param.grad = None
-
-                #copy data from fp32 to fp16
-                fp16_param.data.copy_(fp32_param.data)
-
-        return self.overflow
-
     def step(self, closure=None):
         """
         Not supporting closure.
         """
-
-        if self.fused_lamb_legacy:
-            return self.step_fused_lamb()
-
         self.overflow = self.overflow_checker.check()
         prev_scale = self.cur_scale
 
@@ -218,7 +145,7 @@ class FP16_Optimizer(object):
             grads_for_norm = split_params_grads_into_shared_params(group)
             norm_group_value = 0.0
             if len(grads_for_norm) > 0:
-                norm_group_value = get_weight_norm(grads_for_norm, mpu=self.mpu)
+                norm_group_value = get_weight_norm(grads_for_norm)
             norm_groups.append(norm_group_value)
 
             # copying gradients to fp32 to wor  k with fp32 parameters

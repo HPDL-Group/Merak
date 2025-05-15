@@ -24,6 +24,7 @@ import torch.distributed as dist
 from datetime import datetime
 import torch.distributed as dist
 import torch.nn as nn
+from torch.optim import AdamW
 from torch.utils.tensorboard import SummaryWriter
 
 from typing import Any, Dict, Tuple, Optional, Callable, Union
@@ -33,9 +34,9 @@ from .utils import WorkerInitObj, MegatronPretrainingRandomSampler
 from .core import (
     mpu,
     PipelineEngine,
-    checkpoint,
     PipelineModule
 )
+from .core.checkpoint import CheckpointSaver, CheckpointLoader, rotate_checkpoints
 from .core.recompute import checkpoint as checkpoint_func
 from .core.fx.tracer.utils import _generate_dummy_input
 from .utils import BaseParams
@@ -43,7 +44,7 @@ from .merak_args import MerakArguments, mergeargs, manual_set_args
 from .initialize import get_grid, get_topo
 
 from transformers.trainer_pt_utils import get_parameter_names
-from transformers.optimization import AdamW, Adafactor, get_scheduler
+from transformers.optimization import Adafactor, get_scheduler
 
 class MerakTrainer:
     def __init__(
@@ -112,10 +113,9 @@ class MerakTrainer:
         self.dummy_inputs = None
         self._already_load = False
 
-        self._save_checkpoint = checkpoint.save_checkpoint
-        self._rotate_checkpoints = checkpoint.rotate_checkpoints
-        self._load_checkpoint = checkpoint.load_checkpoint
-        self._load_peft_model_state_dict = checkpoint.load_peft_model_state_dict
+        self._save_checkpoint = CheckpointSaver().save_checkpoint
+        self._rotate_checkpoints = rotate_checkpoints
+        self._load_checkpoint = CheckpointLoader().load_checkpoint
 
         if hasattr(self.model, "config"):
             self.model_config = self.model.config
@@ -133,18 +133,17 @@ class MerakTrainer:
         else:
             self.summary_writer = None
 
+        # init pipeline module
+        self.loss_fn = self.get_loss_fn() \
+            if not self.args.parallel_vocab else self.get_vocab_loss_fn()
+        self.create_pipeline_module()
+
         # init training parameters
         self.create_dataloader()
-        # self.optimizer = self.create_optimizer(self.model)
         self.tuning_params.train(self.train_dataloader)
         if self.eval_dataloader is not None:
             self.tuning_params.eval(self.eval_dataloader)
         self.get_dummy_inputs()
-        # self.lr_scheduler = self.create_lr_scheduler()
-        self.loss_fn = self.get_loss_fn() \
-            if not self.args.parallel_vocab else self.get_vocab_loss_fn()
-
-        self.create_pipeline_module()
 
     def create_pipeline_module(self):
         if self.args.trace_method in ['fx', 'dynamo']:
@@ -206,6 +205,8 @@ class MerakTrainer:
                 worker_init_fn=worker_init \
                     if self.args.dataloader_num_workers > 0 else None
             )
+            if mpu.get_pipe_parallel_rank() not in self.input_to_stage_dic.keys():
+                self.train_dataloader = range(len(self.train_dataloader))
         
         if self.eval_dataset is not None:
 
@@ -218,6 +219,8 @@ class MerakTrainer:
                 pin_memory=self.args.dataloader_pin_memory,
                 collate_fn=self.collate_fn,
             )
+            if mpu.get_pipe_parallel_rank() not in self.input_to_stage_dic.keys():
+                self.eval_dataloader = range(len(self.eval_dataloader))
 
     def create_optimizer(self, model: PipelineModule) -> torch.optim.Optimizer:
         
@@ -476,25 +479,17 @@ class MerakTrainer:
         peft_config: Optional[Callable] = None
         ) -> int:
         if os.path.exists(resume_from_checkpoint):
-            if peft_config:
-                load_results = checkpoint.load_peft_model_state_dict(
-                    self.engine.module,
-                    self.args,
-                    peft_config,
-                    verbose=True
-                )
-                return load_results
-            else:
-                iteration, state_dict, opt_state_dict = self._load_checkpoint(
-                        self.engine.module,
-                        self.engine.optimizer,
-                        self.engine.lr_scheduler,
-                        self.args,
-                        verbose=True
-                )
-                del state_dict, opt_state_dict
-                self._already_load = True
-                return iteration
+            load_result, state_dict, opt_state_dict = self._load_checkpoint(
+                self.engine.module,
+                self.engine.optimizer,
+                self.engine.lr_scheduler,
+                self.args,
+                peft_config,
+                verbose=True
+            )
+            del state_dict, opt_state_dict
+            self._already_load = True
+            return load_result
 
         else:
             raise ValueError("Cannot find checkpoint files")

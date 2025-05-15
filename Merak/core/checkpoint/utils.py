@@ -16,6 +16,7 @@
 # limitations under the License.
 
 import os
+import sys
 import enum
 import json
 from pathlib import Path
@@ -26,6 +27,278 @@ from typing import List, Union
 
 import torch
 import torch.nn as nn
+from collections import OrderedDict
+from typing import Optional, Tuple, Callable, Union, List, Dict
+from pathlib import Path
+
+from Merak import print_rank_0
+from .. import mpu
+
+TRANSFORMERS_MODEL_NAME = ["pytorch_model.bin", "adapter_model.bin"]
+
+def get_checkpoint_name(
+    checkpoints_path: str,
+    iteration: int,
+    args,
+    release: bool = False,
+    best: Optional[bool] = None,
+    peft: bool = False
+) -> Tuple[str, Optional[str]]:
+    """
+    Generates the checkpoint file names based on the training parameters.
+
+    Args:
+        checkpoints_path (str): Path to the checkpoint directory.
+        iteration (int): Training iteration number.
+        args: Training arguments.
+        release (bool, optional): Whether this is a release checkpoint. Defaults to False.
+        complete (bool, optional): Whether this is a complete checkpoint. Defaults to False.
+        best (Optional[bool], optional): Whether this is the best checkpoint. Defaults to None.
+        peft (bool, optional): Whether this is a Peft checkpoint. Defaults to False.
+
+    Returns:
+        Tuple[str, Optional[str]]: The model and optimizer checkpoint file names.
+    """
+    if release:
+        directory = 'release'
+    elif best is not None:
+        directory = 'best_model'
+    else:
+        directory = f'iter_{iteration:07d}'
+
+    peft_id = 'lora_' if peft else ''
+
+    model_ckpt_name = os.path.join(
+        checkpoints_path,
+        directory,
+        get_rank_ckpt_name(peft_id)
+    )
+
+    if args.zero_stage == 1:
+        zero_ckpt_name = os.path.join(
+            checkpoints_path,
+            directory,
+            get_rank_ckpt_name(peft_id, zero_file=True)
+        )
+    else:
+        zero_ckpt_name = None
+
+    return model_ckpt_name, zero_ckpt_name
+
+def get_rank_ckpt_name(peft_id: str, zero_file: bool = False) -> str:
+    """
+    Generates the checkpoint file name based on parallel ranks.
+
+    Args:
+        peft_id (str): Peft model identifier.
+        zero_file (bool, optional): Whether it's a zero optimizer state file. Defaults to False.
+
+    Returns:
+        str: The checkpoint file name.
+    """
+    dp_rank = f"{mpu.get_data_parallel_rank():05d}"
+    pp_rank = f"{mpu.get_pipe_parallel_rank():03d}"
+    mp_rank = f"{mpu.get_model_parallel_rank():02d}"
+
+    if mpu.get_model_parallel_world_size() == 1 and mpu.get_pipe_parallel_world_size() == 1:
+        if zero_file:
+            return f"zero_dp_rank_{dp_rank}_opt_states.pt"
+        else:
+            return f"{peft_id}model_optim.pt"
+    elif mpu.get_pipe_parallel_world_size() == 1 and mpu.get_model_parallel_world_size() != 1:
+        if zero_file:
+            return f"zero_dp_rank_{dp_rank}_mp_rank_{mp_rank}_opt_states.pt"
+        else:
+            return f"mp_rank_{mp_rank}/{peft_id}partial_model_optim.pt"
+    else:
+        if zero_file:
+            return f"zero_dp_rank_{dp_rank}_mp_rank_{mp_rank}_pp_rank_{pp_rank}_opt_states.pt"
+        else:
+            return f"mp_rank_{mp_rank}_pp_rank_{pp_rank}/{peft_id}partial_model_optim.pt"
+
+def read_metadata(tracker_filename: str) -> Tuple[int, bool]:
+    # Read the tracker file and either set the iteration or
+    # mark it as a release checkpoint.
+    iteration = 0
+    release = False
+    with open(tracker_filename, 'r') as f:
+        metastring = f.read().strip()
+        try:
+            iteration = int(metastring)
+        except ValueError:
+            release = metastring == 'release'
+            if not release:
+                print_rank_0('ERROR: Invalid metadata file {}. Exiting'.format(
+                    tracker_filename))
+                sys.exit()
+    assert iteration > 0 or release, 'error parsing metadata file {}'.format(
+        tracker_filename)
+
+    # Get the max iteration retrieved across the ranks.
+    if torch.cuda.is_available():
+        iters = torch.LongTensor([iteration]).cuda()
+    else:
+        iters = torch.LongTensor([iteration])
+    torch.distributed.all_reduce(iters, op=torch.distributed.ReduceOp.MAX)
+    max_iter = iters[0].item()
+
+    # We should now have all the same iteration.
+    # If not, print a warning and chose the maximum
+    # iteration across all ranks.
+    if iteration != max_iter:
+        print('WARNING: on rank {} found iteration {} in the '
+              'metadata while max iteration across the ranks '
+              'is {}, replacing it with max iteration.'.format(
+                  mpu.get_pipe_parallel_rank(), iteration, max_iter), flush=True)
+    return max_iter, release
+
+def detect_checkpoint_format(model_dir=".", peft=False):
+    """
+    检测模型目录的检查点格式类型
+    :param model_dir: 模型文件夹路径，默认为当前目录
+    :return: "pytorch_bin" | "safetensors" | "both" | "none"
+    """
+    # 构造完整文件路径
+    pytorch_bin = os.path.join(model_dir, TRANSFORMERS_MODEL_NAME[0])
+    adapter = os.path.join(model_dir, TRANSFORMERS_MODEL_NAME[1])
+    safetensors = os.path.join(model_dir, "model.safetensors.index.json")
+
+    # 检查文件存在性
+    has_pytorch = os.path.isfile(pytorch_bin)
+    has_adapter = os.path.isfile(adapter)
+    has_safe = os.path.isfile(safetensors)
+
+    # 判断结果
+    if has_pytorch and has_safe:
+        raise ValueError(
+            "The path of resume_from_checkpoint has at least 2 type of checkpint file."
+        )
+    elif has_pytorch and not peft:
+        return pytorch_bin
+    elif has_adapter and peft:
+        return adapter
+    elif has_safe and not peft:
+        return safetensors
+    else:
+        return None
+
+def check_state_dict(
+    model: nn.Module,
+    old_state_dict: OrderedDict,
+    args,
+    verbose: bool = False,
+    load_list: Optional[List[str]] = None
+) -> Tuple[Union[OrderedDict, bool]]:
+    """
+    Address mismatches between old checkpoints and current model states,
+    and return the converted state dictionary along with a strict matching flag.
+    """
+
+    def _get_model_keys(model: nn.Module) -> List[str]:
+        """Get the list of model's state dictionary keys."""
+        return list(model.state_dict().keys())
+
+    def _get_old_keys(old_state_dict: OrderedDict) -> List[str]:
+        """Get the list of keys from the old state dictionary."""
+        if 'model' in old_state_dict:
+            return list(old_state_dict['model'].keys())
+        return list(old_state_dict.keys())
+
+    def _convert_keys(new_keys: str, old_keys: str, state_dict: OrderedDict):
+        new_state_dict = {}
+
+        for i in range(len(new_keys)):
+            for j in range(len(old_keys)):
+                split_mk = new_keys[i].split(".")[1:]
+                split_uk = old_keys[j].split(".")
+                mk = ".".join(split_mk)
+                uk = ".".join(split_uk)
+                min_len = min(len(split_mk), len(split_uk))
+                if split_mk == split_uk[2:] or split_mk == split_uk[1:]:
+                    new_state_dict[new_keys[i]] = state_dict[old_keys[j]]
+                    # print(new_keys[i], old_keys[j],
+                    #       mpu.get_pipe_parallel_rank())
+                    break
+                elif mk == uk or new_keys[i] == old_keys[j]:
+                    new_state_dict[new_keys[i]] = state_dict[old_keys[j]]
+                    # print(new_keys[i], old_keys[j],
+                    #       mpu.get_pipe_parallel_rank())
+                    break
+                elif min_len <= 3 and same_layer_idx(split_mk, split_uk) \
+                    and split_mk[-2:] == split_uk[-2:]:
+                    new_state_dict[new_keys[i]] = state_dict[old_keys[j]]
+                    # print(new_keys[i], old_keys[j],
+                    #       mpu.get_pipe_parallel_rank())
+                    break
+                elif min_len > 3 and same_layer_idx(split_mk, split_uk) \
+                    and split_mk[-4:] == split_uk[-4:]:
+                    new_state_dict[new_keys[i]] = state_dict[old_keys[j]]
+                    # print(new_keys[i], old_keys[j],
+                    #       mpu.get_pipe_parallel_rank())
+                    break
+
+        return new_state_dict
+
+    # Main logic section
+    new_keys = _get_model_keys(model)
+    old_keys = _get_old_keys(old_state_dict)
+
+    if new_keys == old_keys:
+        return old_state_dict, True
+
+    # Prepare the old state dictionary
+    if "model" in old_state_dict:
+        old_model_state = old_state_dict['model']
+    else:
+        old_model_state = old_state_dict
+
+    # Perform key conversion
+    new_state_dict = _convert_keys(new_keys, old_keys, old_model_state)
+
+    # Check for missing and unexpected keys
+    convert_keys = list(new_state_dict.keys())
+    missing_keys = list(set(new_keys) - set(convert_keys))
+    unexpected_keys = list(set(convert_keys) - set(new_keys))
+
+    strict = True
+    if load_list is not None:
+        for n in load_list:
+            if n not in ".".join(missing_keys):
+                verbose = False
+    if len(missing_keys) > 0 or len(unexpected_keys) > 0:
+        strict = False
+        if verbose and mpu.get_data_parallel_rank() == 0:
+            if len(missing_keys) > 0:
+                # Filter out keys not in the load list
+                print(f'Stage {mpu.get_pipe_parallel_rank()}:'
+                   'Warning! Some weights of model were not initialized from the model checkpoint.'
+                  f'Missing keys: {missing_keys}')
+            if len(unexpected_keys) > 0:
+                print(f'Stage {mpu.get_pipe_parallel_rank()}:'
+                  f'Warning! Some weights of the model checkpoint at {args.resume_from_checkpoint} were not used.'
+                  f'Unexcepted keys: {unexpected_keys}')
+
+    if "model" in old_state_dict:
+        old_state_dict['model'] = new_state_dict
+    else:
+        old_state_dict = new_state_dict
+    return old_state_dict, strict
+
+def ensure_directory_exists(path: str) -> None:
+    """Ensures the directory exists, creating it if necessary."""
+    if not os.path.exists(path):
+        os.makedirs(path)
+
+def get_checkpoint_tracker_filename(checkpoints_path: str) -> str:
+    """Tracker file rescords the latest chckpoint during
+    training to restart from."""
+    return os.path.join(checkpoints_path,
+                        'latest_checkpointed_iteration.txt')
+
+def get_best_checkpoint_filename(checkpoints_path: str) -> str:
+    """Tracker file rescords the latest chckpoint during
+    training to restart from."""
+    return os.path.join(checkpoints_path, 'best_model_loss.txt')
 
 def unwrap_model(model: Union[nn.Module, List[nn.Module]]) -> List[nn.Module]:
     return_list = True

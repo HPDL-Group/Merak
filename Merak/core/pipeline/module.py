@@ -28,7 +28,7 @@ import torch
 import torch.nn as nn
 import torch.distributed as dist
 from torch.distributed.distributed_c10d import get_global_rank
-from torch.cuda.amp import autocast
+from torch.amp import autocast
 from transformers import PretrainedConfig
 
 # from .. import print_rank_0
@@ -46,6 +46,7 @@ from ..finetuning.lora import (
     mark_only_lora_as_trainable, _find_and_replace
 )
 
+from ..tensor_parallel.utils import init_method_normal
 from ...merak_args import MerakArguments
 
 try:
@@ -123,7 +124,10 @@ class PipelineModule(nn.Module):
 
         super().__init__()
 
-        self.init_method = model._init_weights
+        if hasattr(model, "_init_weights"):
+            self.init_method = model._init_weights
+        else:
+            self.init_method = init_method_normal(args.init_method_std)
         self.args = args
         self.loss_fn = loss_fn
         self.seed_layers = seed_layers
@@ -132,6 +136,7 @@ class PipelineModule(nn.Module):
         self._topo = topology
         self._grid = communicaiton_grid
         self.dummy_inputs = dummy_inputs
+        self.device = None
         if hasattr(model, "config"):
             self.config = model.config
         if dist.get_rank() == 0:
@@ -173,6 +178,8 @@ class PipelineModule(nn.Module):
         model_class = model.__class__
         if self.args.fp16:
             model = model.half()
+        if self.args.bf16:
+            model = model.bfloat16()
         rebuild_module = ModuleRebuild(self.args, model, model_class)
         if isinstance(model, nn.Sequential):
             layers, input_to_shard_dic = (list(model), None)
@@ -370,11 +377,14 @@ class PipelineModule(nn.Module):
                                group=mpu.get_data_parallel_group())
 
     def configure_distributed_model(self, device: torch.device):
+        self.device = device
         if self.args.half_precision_backend == "apex":
             return
 
         if self.args.fp16:
             shuold_dtype = torch.half
+        elif self.args.bf16:
+            shuold_dtype = torch.bfloat16
         else:
             shuold_dtype = torch.float
         if not all(
@@ -422,6 +432,8 @@ class PipelineModule(nn.Module):
                         else:
                             module_utils.set_random_seed(new_seed)
                     with autocast(
+                        device_type=self.device.type,
+                        dtype=torch.bfloat16 if self.args.bf16 else torch.float16,
                         enabled=True if self.args.half_precision_backend == "cuda_amp" else False
                     ):
                         if isinstance(inputs, tuple):
