@@ -49,6 +49,11 @@ from ..finetuning.lora import (
 from ..tensor_parallel.utils import init_method_normal
 from ...merak_args import MerakArguments
 
+from ..sequence_parallel import (
+    replace_to_sp_module, 
+    get_leaf_modules_for_sp
+)
+
 try:
     from contextlib import nullcontext
 except ImportError:
@@ -73,7 +78,7 @@ class PipelineModule(nn.Module):
             base_seed: int = 1234,
             communicaiton_grid: Optional[Callable] = None,
             activation_checkpoint_func: Callable = checkpoint_func,
-            leaf_modules: list = (),
+            leaf_modules: Tuple = (),
             dummy_inputs: Optional[Dict[str, torch.Tensor]] = None
         ):
         """Modules to be parallelized with pipeline parallelism.
@@ -137,8 +142,7 @@ class PipelineModule(nn.Module):
         self._grid = communicaiton_grid
         self.dummy_inputs = dummy_inputs
         self.device = None
-        if hasattr(model, "config"):
-            self.config = model.config
+
         if dist.get_rank() == 0:
             try:
                 seed_str = self.seed_fn.__name__
@@ -156,7 +160,11 @@ class PipelineModule(nn.Module):
         self.local_rank = args.local_rank
         assert self.local_rank != None
 
-        self.sequence_parallel = self.args.sequence_parallel
+        self.model_parallel = mpu.get_model_parallel_world_size() > 1
+        self.sequence_parallel = self.args.sequence_parallel \
+            and mpu.get_sequence_parallel_world_size() > 1
+        if self.sequence_parallel:
+            mpu.mappings.set_sequence_dim(self.args.sequence_dim)
 
         self.stage_id = self._topo.get_coord(self.global_rank).pipe
         self.num_stages = self._topo.get_dim('pipe')
@@ -192,7 +200,7 @@ class PipelineModule(nn.Module):
         # rebuild module for tensor parallel
         # rebuild_module = ModuleRebuild(self.args, layers, model_class)
         if dist.get_rank() == 0:
-            print(layers)
+            print(f'layers: {layers}', flush=True)
 
         # Initialize partition information
         self._layer_specs = layers if isinstance(layers, list) else list(layers)
@@ -236,7 +244,9 @@ class PipelineModule(nn.Module):
                 num_parts=self._num_layers//self.num_stages)
         
         self._build(tie_dims, input_to_shard_dic)
-
+        if self.sequence_parallel:
+            replace_to_sp_module(self, model, self.args)
+        
         should_reinit = rebuild_module.recover_module(self)
         if should_reinit:
             self.apply(self.init_method)
@@ -248,8 +258,13 @@ class PipelineModule(nn.Module):
     def _traced_module(
             self,
             module: nn.Module,
-            leaf_modules: List[nn.Module]
+            leaf_modules: Tuple[nn.Module]
         ) -> Tuple[Union[List[torch.fx.GraphModule], Dict[str, int]]]:
+        
+        if self.sequence_parallel:
+            sp_leaf_modules = get_leaf_modules_for_sp(module)
+            leaf_modules = tuple(set(leaf_modules + sp_leaf_modules))
+            
         model, layers, input_to_shard = convert_to_sequential(
             module,
             self.args,
@@ -306,7 +321,7 @@ class PipelineModule(nn.Module):
                     self.seed_fn(self.base_seed + layer_idx)
                 else:
                     module_utils.set_random_seed(self.base_seed + layer_idx)
-
+                    
             # Recursively build PipelineModule objects
             if isinstance(layer, PipelineModule):
                 raise NotImplementedError('RECURSIVE BUILD NOT YET IMPLEMENTED')
@@ -324,7 +339,6 @@ class PipelineModule(nn.Module):
                     # print(layer.code)
                 self.forward_funcs.append(layer)
                 self.add_module(name, layer)
-
             else:
                 self.forward_funcs.append(layer)
                 
@@ -443,7 +457,8 @@ class PipelineModule(nn.Module):
                 return inputs
 
             return exec_func
-        if self.sequence_parallel:
+        
+        if self.model_parallel or self.sequence_parallel:
             rng_context = get_rng_tracker().fork()
         else:
             rng_context = nullcontext()
@@ -559,7 +574,7 @@ class PipelineModule(nn.Module):
 
         # Print some information on the partitioning.
         if self.global_rank == 0:
-            print(self.parts)
+            print(f'parts: {self.parts}', flush=True)
             for stage in range(num_stages):
                 start = self.parts[stage]
                 stop = self.parts[stage + 1]

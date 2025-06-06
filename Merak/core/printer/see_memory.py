@@ -28,25 +28,28 @@ except ModuleNotFoundError:
     USE_CPU = False
 
 if USE_CPU:
+    fn = lambda: 0
     if hasattr(torch_ft.utils, "dsp_mem_used"):
-        torch_memory_reserved = torch_ft.utils.dsp_mem_used
+        torch_memory_allocated = torch_ft.utils.dsp_mem_used
+        torch_memory_reserved = torch_memory_allocated
     else:
-        torch_memory_reserved = None
+        torch_memory_allocated = fn
+        torch_memory_reserved = fn
+        
     if hasattr(torch_ft.utils, "dsp_mem_used_peak"):
-        torch_max_memory_reserved = torch_ft.utils.dsp_mem_used_peak
+        torch_max_memory_allocated = torch_ft.utils.dsp_mem_used_peak
+        torch_max_memory_reserved = torch_max_memory_allocated
     else:
-        torch_max_memory_reserved = None
+        torch_max_memory_allocated = fn
+        torch_max_memory_reserved = fn
 else:
-    if hasattr(torch.cuda, "memory_reserved"):
-        torch_memory_reserved = torch.cuda.memory_reserved
-    else:
-        torch_memory_reserved = torch.cuda.memory_allocated
-    if hasattr(torch.cuda, "max_memory_reserved"):
-        torch_max_memory_reserved = torch.cuda.max_memory_reserved
-    else:
-        torch_max_memory_reserved = torch.cuda.memory_cached
-
-peak_memory = 0
+    torch_memory_allocated = torch.cuda.memory_allocated
+    torch_memory_reserved = torch.cuda.memory_reserved
+    
+    torch_max_memory_allocated = torch.cuda.max_memory_allocated
+    torch_max_memory_reserved = torch.cuda.max_memory_reserved
+     
+# peak_memory = 0
 
 def see_memory_usage(
         message: str,
@@ -65,20 +68,20 @@ def see_memory_usage(
     # python doesn't do real-time garbage collection so do it explicitly to get
     # the correct RAM reports
     gc.collect()
-    global peak_memory
-    if USE_CPU:
-        max_ma = round(torch_max_memory_reserved() / (1024 * 1024),2)
-    else:
-        max_ma = round(torch.cuda.max_memory_allocated() / (1024 * 1024),2)
-    peak_memory = max(peak_memory, max_ma)
+    # global peak_memory
+    # if USE_CPU:
+    #     max_ma = round(torch_max_memory_reserved() / (1024 * 1024),2)
+    # else:
+    #     max_ma = round(torch.cuda.max_memory_allocated() / (1024 * 1024),2)
+    # peak_memory = max(peak_memory, max_ma)
     # Print message except when distributed but not rank 0
     # log_dist(message, ranks=ranks)
     log_dist(
-        f"{message} MA {round(torch_memory_reserved() / (1024 * 1024),2 )} MB \
-        Max_MA {max_ma} MB \
+        f"{message} MA {round(torch_memory_allocated() / (1024 * 1024),2 )} MB \
+        Max_MA {round(torch_max_memory_allocated() / (1024 * 1024), 2)} MB \
         CA {round(torch_memory_reserved() / (1024 * 1024),2)} MB \
         Max_CA {round(torch_max_memory_reserved() / (1024 * 1024))} MB \
-        PEAK_MA {peak_memory} MB    ", ranks=ranks)
+        PEAK_MA {round(torch_max_memory_allocated() / (1024 * 1024), 2)} MB    ", ranks=ranks)
 
     if ram:
         vm_stats = psutil.virtual_memory()

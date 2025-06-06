@@ -30,6 +30,8 @@ _MODEL_PARALLEL_GROUP = None
 _DATA_PARALLEL_GROUP = None
 # Pipeline parallel group that the current rank belongs to.
 _PIPE_PARALLEL_GROUP = None
+# Sequence parallel group that the current rank belongs to.
+_SEQUENCE_PARALLEL_GROUP = None
 
 # These values enable us to change the mpu sizes on the fly.
 _MPU_WORLD_SIZE = None
@@ -160,3 +162,21 @@ def is_pipeline_first_stage():
 
 def is_pipeline_last_stage():
     return get_pipe_parallel_rank() == get_pipe_parallel_world_size() - 1
+
+def get_sequence_parallel_group():
+    """Get the sequence parallel group the caller rank belongs to."""
+    assert _SEQUENCE_PARALLEL_GROUP is not None, \
+        'sequence parallel group is not initialized'
+    return _SEQUENCE_PARALLEL_GROUP
+
+def get_sequence_parallel_rank():
+    """Return my rank for the sequence parallel group."""
+    return torch.distributed.get_rank(group=get_sequence_parallel_group())
+
+def get_sequence_parallel_world_size():
+    """Return world size for the sequence parallel group."""
+    return torch.distributed.get_world_size(group=get_sequence_parallel_group())
+
+def set_sequence_parallel_group(group):
+    global _SEQUENCE_PARALLEL_GROUP
+    _SEQUENCE_PARALLEL_GROUP = group

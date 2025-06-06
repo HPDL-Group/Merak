@@ -24,6 +24,8 @@ import torch.nn.init as init
 from Merak.merak_args import get_args
 from .. import mpu
 
+from typing import Callable
+
 ## bias 在使用PipedParallelLinear 时候不能 skip_bias_add
 ## 在使用AsyncRowParallelLinear 必须skip_bias_add
 ## AsyncColumnParallelLinear 不能skip_bias_add
@@ -92,14 +94,6 @@ class ColPara(torch.nn.Module):
                 gather_output=gather_output,
                 init_method=init_method,
                 skip_bias_add=False)
-        elif args.sequence_parallel:
-            self.col_linear = mpu.ColumnSequenceParallel(
-                in_feature,
-                out_feature,
-                bias=bias,
-                gather_output=gather_output,
-                init_method=init_method,
-                skip_bias_add=False)
         else:
             self.col_linear = mpu.ColumnParallelLinear(
                 in_feature,
@@ -155,14 +149,6 @@ class RowPara(torch.nn.Module):
                 input_is_parallel=input_is_parallel,
                 init_method=output_layer_init_method,
                 skip_bias_add=False)
-        elif args.sequence_parallel:
-            self.row_linear = mpu.RowSequenceParallel(
-                in_feature,
-                out_feature,
-                bias=bias,
-                input_is_parallel=input_is_parallel,
-                init_method=output_layer_init_method,
-                skip_bias_add=False)
         else:
             self.row_linear = mpu.RowParallelLinear(
                 in_feature,
@@ -196,17 +182,6 @@ class RowPara(torch.nn.Module):
             if self.return_bias:
                 return output, bias
             return output
-
-
-class SequenceParallelEmb(torch.nn.Module):
-    def __init__(self, *module_args):
-        super(SequenceParallelEmb, self).__init__()
-        self.emb = torch.nn.Embedding(*module_args)
-    
-    def forward(self, x):
-        x = self.emb(x)
-        x = mpu.mappings.scatter_to_sequence_parallel_region(x)
-        return x
 
 
 def get_async_op_hook(grad):
@@ -528,3 +503,34 @@ class PipedRowParallelLinear(torch.nn.Module):
             self.bias is not None
         )
 
+
+def build_layers(name : str, module: torch.nn.Module, mp_size: int, 
+                 init_method : Callable, scaled_init_method : Callable):
+    if isinstance(module, nn.Linear) or name in ['c_attn', 'c_proj', 'c_fc']:
+        _bias = module.bias if isinstance(module.bias, bool) \
+            else isinstance(module.bias, torch.Tensor)
+        if not hasattr(module, 'mp_attr'):
+            return module
+        elif module.mp_attr.startswith('row'):
+            module_args = [module.in_features * mp_size, module.out_features]
+            if module.mp_attr == 'row_mlp':
+                return RowPara(module_args[0], module_args[1],
+                            scaled_init_method, bias=_bias)
+            else:
+                return RowPara(module_args[0], module_args[1],
+                            scaled_init_method, bias=_bias, need_permute=False)
+        elif module.mp_attr.startswith('col'):
+            module_args = [module.in_features, module.out_features * mp_size]
+            if module.mp_attr == 'col_mlp':
+                return ColPara(module_args[0], module_args[1],
+                            init_method, bias=_bias)
+            else:
+                return ColPara(module_args[0], module_args[1],
+                            init_method, bias=_bias, need_permute=False)
+    elif isinstance(module, nn.Conv2d):
+        module_args = module.__dict__
+        if not hasattr(module, 'mp_attr'):
+            return module
+        return ConvPara(**module_args)
+    else:
+        return None

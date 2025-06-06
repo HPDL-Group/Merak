@@ -44,8 +44,10 @@ def set_random_seed(seed: int):
         random.seed(seed)
         numpy.random.seed(seed)
         torch.manual_seed(seed)
-        if torch.cuda.device_count() > 0:
-            model_parallel_cuda_manual_seed(seed)
+        # if torch.cuda.device_count() > 0:
+        #     model_parallel_cuda_manual_seed(seed)
+        # dsp在tp或sp时，dropout算子也需考虑同一stage的不同rank设备设置不同的种子
+        model_parallel_cuda_manual_seed(seed) 
     else:
         raise ValueError('Seed ({}) should be a positive integer.'.format(seed))
 

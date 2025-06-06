@@ -30,7 +30,7 @@ from .utils import (
     tp_overlapping_available, init_method_normal,
     reset_module_tensor, scaled_init_method_normal
 )
-from .mp_layers import ColPara, RowPara, ConvPara
+from .mp_layers import build_layers
 from .transformer_blocks import PipedGPT2Model, PipedGPT2Block
 from .. import mpu
 from ..pipeline.module_utils import set_random_seed
@@ -77,33 +77,7 @@ class ModuleRebuild:
         # self.model = set_mp_attr(self.model, self.mp_size)
 
     def build_parallel_layers(self, n, module):
-        if isinstance(module, nn.Linear) or n in ['c_attn', 'c_proj', 'c_fc']:
-            _bias = module.bias if isinstance(module.bias, bool) else isinstance(module.bias, torch.Tensor)
-            if not hasattr(module, 'mp_attr'):
-                return module
-            elif module.mp_attr.startswith('row'):
-                module_args = [module.in_features * self.mp_size, module.out_features]
-                if module.mp_attr == 'row_mlp':
-                    return RowPara(module_args[0], module_args[1],
-                                self.scaled_init_method, bias=_bias)
-                else:
-                    return RowPara(module_args[0], module_args[1],
-                                self.scaled_init_method, bias=_bias, need_permute=False)
-            elif module.mp_attr.startswith('col'):
-                module_args = [module.in_features, module.out_features * self.mp_size]
-                if module.mp_attr == 'col_mlp':
-                    return ColPara(module_args[0], module_args[1],
-                                self.init_method, bias=_bias)
-                else:
-                    return ColPara(module_args[0], module_args[1],
-                                self.init_method, bias=_bias, need_permute=False)
-        elif isinstance(module, nn.Conv2d):
-            module_args = module.__dict__
-            if not hasattr(module, 'mp_attr'):
-                return module
-            return ConvPara(**module_args)
-        else:
-            return None
+        return build_layers(n, module, self.mp_size, self.init_method, self.scaled_init_method)
 
     def recover_module(self, module):
         self.model = module
@@ -136,25 +110,13 @@ class ModuleRebuild:
 
         return should_reinit
 
-    def sequence_parallel(self):
-        if self.args.sequence_parallel:
-            mpu.mappings.set_sequence_dim(self.args.sequence_dim)
-
-        return self.model
 
     def vocab_parallel(self, emb_dim: int):
-        if self.args.parallel_vocab:
+        if self.args.parallel_vocab and self.mp_size > 1:
             # replace module to VocabParallelEmbedding and column parallel
             def replace_module(model,to_replaced,
                                module_func, get_args, sequence_parallel):
                 for n, module in model.named_children():
-                    if sequence_parallel and \
-                       isinstance(module, torch.nn.LayerNorm):
-                        setattr(module.weight, 'sequence_parallel',
-                                self.args.sequence_parallel)
-                        setattr(module.bias, 'sequence_parallel',
-                                self.args.sequence_parallel)
-
                     if isinstance(module, to_replaced) and \
                         str(module.weight.shape).replace(".", "_") \
                             in self.model.tied_modules_keys:
@@ -176,40 +138,24 @@ class ModuleRebuild:
                 False
             )
 
-            if self.args.sequence_parallel:
-                # input_size, output_size, bias=True, gather_output=True,\
-                # init_method=init.xavier_normal_
-                replace_module(
-                    self.model,
-                    torch.nn.Linear,
-                    mpu.ColumnSequenceParallel,
-                    lambda x: (
-                        x.in_features,
-                        x.out_features,
-                        (x.bias is not None),
-                        False,
-                        torch.nn.init.xavier_normal_
+            # 针对类似LLM模型的最后一个lm_head计算，
+            # 切分的计算结果在vocab_parallel_cross_entropy中进行合并处理
+            replace_module(
+                self.model,
+                torch.nn.Linear,
+                mpu.ColumnParallelLinear,
+                lambda x: (
+                    x.in_features,
+                    x.out_features,
+                    (
+                        x.bias is not None
                     ),
-                    True
-                )
-            else:
-                # in_feature,out_feature,bias=bias,gather_output=gather_output,\
-                # init_method=init_method
-                replace_module(
-                    self.model,
-                    torch.nn.Linear,
-                    mpu.ColumnParallelLinear,
-                    lambda x: (
-                        x.in_features,
-                        x.out_features,
-                        (
-                            x.bias is not None
-                        ),
-                        False,
-                        torch.nn.init.xavier_normal_
-                    ),
-                    False
-                )
+                    False,
+                    torch.nn.init.xavier_normal_
+                ),
+                False
+            )
+            
             keys_mapping = {
                 str(i).replace(".", "_"):
                 f'torch_Size([{i[0]//self.mp_size}, {i[1]}])'

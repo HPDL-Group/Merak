@@ -35,19 +35,22 @@ from .initialize import get_pipe_parallel_world_size
 from .initialize import get_pipeline_model_parallel_prev_rank
 from .initialize import get_pipeline_model_parallel_next_rank
 from .initialize import is_pipeline_first_stage, is_pipeline_last_stage
+from .initialize import get_sequence_parallel_group, get_sequence_parallel_rank
+from .initialize import get_sequence_parallel_world_size, set_sequence_parallel_group
 
 from .layers import LayerNorm
 from .layers import ColumnParallelLinear
 from .layers import RowParallelLinear
 from .layers import VocabParallelEmbedding
-from .layers import RowSequenceParallel
-from .layers import ColumnSequenceParallel
 from .layers import ColParallelConv2d
 
 from .mappings import copy_to_model_parallel_region
 from .mappings import gather_from_model_parallel_region
 from .mappings import reduce_from_model_parallel_region
 from .mappings import scatter_to_model_parallel_region
+from .mappings import all_to_all_sequence_parallel_region
+from .mappings import split_for_sequence_parallel_region
+from .mappings import gather_for_sequence_parallel_region
 
 from .utils import divide
 from .utils import split_tensor_along_last_dim

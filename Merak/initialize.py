@@ -33,7 +33,7 @@ def print_rank_0(message: str):
     else:
         print(message, flush=True)
 
-def init(pp: int, tp: int, dp: int, backend: str = 'nccl'):
+def init(pp: int, tp: int, dp: int, sp: int = 1, backend: str = 'nccl'):
     """
     Initialized the distributed communication groups, include data parallel, 
     tensor model parallel and pipeline model parallel. Each parallel degree 
@@ -43,6 +43,7 @@ def init(pp: int, tp: int, dp: int, backend: str = 'nccl'):
     -   dp (int) -- Parallel degree of data parallelism.
     -   tp (int) -- Parallel degree of tensor model parallelism.
     -   pp (int) -- Parallel degree of pipeline model parallelism.
+    -   sp (int) -- Parallel degree of sequence model parallelism.
     """
     compile_config = torch.__config__.show().split(", ")
     if 'USE_NCCL=1' in compile_config or 'USE_NCCL=ON' in compile_config:
@@ -55,10 +56,10 @@ def init(pp: int, tp: int, dp: int, backend: str = 'nccl'):
         dist.init_process_group(backend)
     # we init topology and communication grid here
     from .core.mpu.topology import (
-        PipeModelDataParallelTopology,
+        PipeDataSequenceModelParallelTopology,
         PipelineParallelGrid)
     global topo
-    topo = PipeModelDataParallelTopology(num_pp=pp, num_mp=tp, num_dp=dp)
+    topo = PipeDataSequenceModelParallelTopology(num_pp=pp, num_dp=dp, num_sp=sp, num_mp=tp)
     global communication_grid
     communication_grid = PipelineParallelGrid(
                         topo,
@@ -70,14 +71,17 @@ def init(pp: int, tp: int, dp: int, backend: str = 'nccl'):
     from .core.mpu.initialize import (
         set_data_parallel_group,
         set_model_parallel_group,
-        set_pipe_parallel_group)
+        set_pipe_parallel_group,
+        set_sequence_parallel_group)
 
     set_data_parallel_group(communication_grid.get_data_parallel_group())
     set_model_parallel_group(communication_grid.get_slice_parallel_group())
     set_pipe_parallel_group(communication_grid.get_pipe_parallel_group())
+    set_sequence_parallel_group(communication_grid.get_sequence_parallel_group())
 
     print_rank_0(f'Pipeline Model Parallel Size: {pp} \
                    \nTensor Model Parallel Size: {tp} \
+                   \nSequence Parallel Size: {sp} \
                    \nData Parallel Size: {dp} \n')
 
 def get_topo():

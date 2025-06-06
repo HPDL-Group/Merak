@@ -262,6 +262,20 @@ class PipeModelDataParallelTopology(ProcessTopology):
                          dims=[num_pp, num_dp, num_mp])
 
 
+class PipeDataSequenceParallelTopology(ProcessTopology):
+    """ A topology for hybrid pipeline, sequence, and data parallelism. """
+    def __init__(self, num_pp, num_dp, num_sp):
+        super().__init__(axes=['pipe', 'data', 'sequence'],
+                         dims=[num_pp, num_dp, num_sp])
+
+
+class PipeDataSequenceModelParallelTopology(ProcessTopology):
+    """ A topology for hybrid pipeline, model, sequence, and data parallelism. """
+    def __init__(self, num_pp, num_dp, num_sp, num_mp):
+        super().__init__(axes=['pipe', 'data', 'sequence', 'model'],
+                         dims=[num_pp, num_dp, num_sp, num_mp])
+
+
 class PipelineParallelGrid:
     """Implements a grid object that stores the data parallel ranks
     corresponding to each of the model parallel stages
@@ -305,6 +319,7 @@ class PipelineParallelGrid:
         self.pipe_parallel_size = max(self._topo.get_dim('pipe'), 1)
         self.model_parallel_size = max(self._topo.get_dim('model'), 1)
         self.slice_parallel_size = self.model_parallel_size
+        self.sequence_parallel_size = max(self._topo.get_dim('sequence'), 1)
         assert self._is_grid_valid(), "Invalid Grid"
 
         self.stage_id = self.get_stage_id()
@@ -371,7 +386,6 @@ class PipelineParallelGrid:
                 if group_rank[0] == self.global_rank:
                     self.slice_group = group_rank
                     self.slice_proc_group = group
-            return
         else:
             self.mp_group = []
             self.model_groups = self._topo.get_axis_comm_lists('model')
@@ -381,6 +395,15 @@ class PipelineParallelGrid:
                     self.slice_group = g
                     self.slice_proc_group = proc_group
 
+        # Create new ProcessGroup for sequence collectives
+        self.sp_group = []
+        self.sp_groups = self._topo.get_axis_comm_lists('sequence')
+        for g in self.sp_groups:
+            proc_group = dist.new_group(ranks=g)
+            if self.global_rank in g:
+                self.sp_group = g
+                self.sp_proc_group = proc_group
+                
     def get_stage_id(self):
         return self._topo.get_coord(rank=self.global_rank).pipe
 
@@ -471,3 +494,15 @@ class PipelineParallelGrid:
 
     def get_slice_parallel_group(self):
         return self.slice_proc_group
+
+    def get_sequence_parallel_rank(self):
+        if 'sequence' in self._topo.get_axis_names():
+            return self._topo.get_coord(rank=self.global_rank).sequence
+        else:
+            return 0
+
+    def get_sequence_parallel_world_size(self):
+        return self.sequence_parallel_size
+
+    def get_sequence_parallel_group(self):
+        return self.sp_proc_group

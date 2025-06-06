@@ -107,5 +107,12 @@ class _VocabParallelCrossEntropy(torch.autograd.Function):
 
 
 def vocab_parallel_cross_entropy(vocab_parallel_logits, target):
-    """Helper function for the cross entropy."""
+    """Performs cross entropy loss when logits are split across tensor parallel ranks
+    
+    Args:
+        vocab_parallel_logits: logits split across tensor parallel ranks
+            dimension is [sequence_length, batch_size, vocab_size/num_parallel_ranks]
+
+        target: correct vocab ids of dimseion [sequence_length, micro_batch_size]
+    """
     return _VocabParallelCrossEntropy.apply(vocab_parallel_logits, target)

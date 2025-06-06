@@ -146,8 +146,6 @@ class CommunicationEngine:
 
     def _exec_reduce_grads(self):
         # self._force_grad_boundary = self.is_gradient_accumulation_boundary()
-        if self.args.sequence_parallel:
-            self.allreduce_sequence_parallel_gradients()
         if self.pipeline_enable_backward_allreduce:
             self.timers('backward_allreduce').start()
             self.allreduce_gradients()
@@ -1027,8 +1025,9 @@ class NetCalculationEngine:
             if self.args.wall_clock_breakdown and \
             (self.pipeline.tuning_params.global_steps+ 1) \
                 % self.args.logging_steps == 0:
-                should_log = (mpu.get_data_parallel_rank() == 0 and
-                            mpu.get_model_parallel_rank() == 0)
+                should_log = (mpu.get_data_parallel_rank() == 0 and \
+                            mpu.get_model_parallel_rank() == 0 and \
+                            mpu.get_sequence_parallel_rank() == 0)
                 see_memory_usage('After {} iterations'.format(
                     self.pipeline.tuning_params.global_steps),
                     should_log, ranks=[dist.get_rank()])

@@ -152,7 +152,7 @@ class RNGStatesTracker:
         else:
             orig_rng_state = torch.get_rng_state()
             torch.manual_seed(seed)
-            self.states_ = torch.get_rng_state()
+            self.states_[name] = torch.get_rng_state()
             torch.set_rng_state(orig_rng_state)
 
     @contextlib.contextmanager
@@ -169,7 +169,7 @@ class RNGStatesTracker:
             _set_cuda_rng_state(self.states_[name])
         else:
             orig_rng_state = torch.get_rng_state()
-            torch.set_rng_state(self.states_)
+            torch.set_rng_state(self.states_[name])
         # Do the stuff we wanted to do.
         try:
             yield
@@ -180,7 +180,7 @@ class RNGStatesTracker:
                 # And set the state to the original state we started with.
                 _set_cuda_rng_state(orig_cuda_rng_state)
             else:
-                self.states_ = torch.get_rng_state()
+                self.states_[name] = torch.get_rng_state()
                 torch.set_rng_state(orig_rng_state)
 
 
@@ -212,7 +212,23 @@ def model_parallel_cuda_manual_seed(seed):
     """
     # 2718 is just for fun and any POSITIVE value will work.
     offset = seed + 2718
-    model_parallel_seed = offset + mpu.get_model_parallel_rank()
+    
+    from ...initialize import get_topo
+    topo = get_topo()
+    sp_idx = topo.axes.index('sequence')
+    mp_idx = topo.axes.index('model')
+    
+    if sp_idx < mp_idx:
+        model_parallel_seed = offset \
+            + mpu.get_model_parallel_world_size() \
+            * mpu.get_sequence_parallel_rank() \
+            + mpu.get_model_parallel_rank()
+    else:
+        model_parallel_seed = offset \
+        + mpu.get_sequence_parallel_world_size() \
+        * mpu.get_model_parallel_rank() 
+        + mpu.get_sequence_parallel_rank()    
+    
     # Data parallel gets the original seed.
     data_parallel_seed = seed
 

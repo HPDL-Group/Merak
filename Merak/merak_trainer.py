@@ -172,9 +172,9 @@ class MerakTrainer:
             if hasattr(self.model, 'stage_id'):
                 for i in range(mpu.get_pipe_parallel_world_size()):
                     if i == self.model.stage_id:
-                        print(dist.get_rank(), self.model.stage_id, self.model)
+                        print(f'rank: {dist.get_rank()}, stage_id: {self.model.stage_id}, model:{self.model}', flush=True)
             else:
-                print(dist.get_rank(), self.model)
+                print(f'rank: {dist.get_rank()}, model: {self.model}', flush=True)
 
     def get_train_sampler(self) -> MegatronPretrainingRandomSampler:
         return MegatronPretrainingRandomSampler(
