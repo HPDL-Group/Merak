@@ -1,37 +1,37 @@
 import os
-
-import torch.optim as optim
-
-from functools import partial
 from argparse import ArgumentParser
-
-from pytorch_unet.unet.unet import UNet2D
-from pytorch_unet.unet.model import Model
-from pytorch_unet.unet.utils import MetricList
-from pytorch_unet.unet.metrics import jaccard_index, f1_score, LogNLLLoss
-from pytorch_unet.unet.dataset import JointTransform2D, ImageToImage2D, Image2D
+from functools import partial
 
 import torch
-import Merak
-from Merak import MerakArguments, MerakTrainer
+import torch.optim as optim
+from pytorch_unet.unet.dataset import Image2D, ImageToImage2D, JointTransform2D
+from pytorch_unet.unet.metrics import LogNLLLoss, f1_score, jaccard_index
+from pytorch_unet.unet.model import Model
+from pytorch_unet.unet.unet import UNet2D
+from pytorch_unet.unet.utils import MetricList
 from transformers import HfArgumentParser
 
+import Merak
+from Merak import MerakArguments, MerakTrainer
+
+
 def parse_option(parser):
-    parser.add_argument('--train_dataset', required=True, type=str)
-    parser.add_argument('--val_dataset', type=str)
-    parser.add_argument('--checkpoint_path', required=True, type=str)
-    parser.add_argument('--device', default='cpu', type=str)
-    parser.add_argument('--in_channels', default=3, type=int)
-    parser.add_argument('--out_channels', default=3, type=int)
-    parser.add_argument('--depth', default=5, type=int)
-    parser.add_argument('--width', default=32, type=int)
-    parser.add_argument('--epochs', default=100, type=int)
-    parser.add_argument('--batch_size', default=1, type=int)
-    parser.add_argument('--save_freq', default=0, type=int)
-    parser.add_argument('--save_model', default=0, type=int)
-    parser.add_argument('--model_name', type=str, default='model')
-    parser.add_argument('--crop', type=int, default=None)
+    parser.add_argument("--train_dataset", required=True, type=str)
+    parser.add_argument("--val_dataset", type=str)
+    parser.add_argument("--checkpoint_path", required=True, type=str)
+    parser.add_argument("--device", default="cpu", type=str)
+    parser.add_argument("--in_channels", default=3, type=int)
+    parser.add_argument("--out_channels", default=3, type=int)
+    parser.add_argument("--depth", default=5, type=int)
+    parser.add_argument("--width", default=32, type=int)
+    parser.add_argument("--epochs", default=100, type=int)
+    parser.add_argument("--batch_size", default=1, type=int)
+    parser.add_argument("--save_freq", default=0, type=int)
+    parser.add_argument("--save_model", default=0, type=int)
+    parser.add_argument("--model_name", type=str, default="model")
+    parser.add_argument("--crop", type=int, default=None)
     return parser
+
 
 pp = 2
 tp = 1
@@ -48,13 +48,15 @@ if args.crop is not None:
 else:
     crop = None
 
-tf_train = JointTransform2D(crop=crop, p_flip=0.5, color_jitter_params=None, long_mask=True)
+tf_train = JointTransform2D(
+    crop=crop, p_flip=0.5, color_jitter_params=None, long_mask=True
+)
 tf_val = JointTransform2D(crop=crop, p_flip=0, color_jitter_params=None, long_mask=True)
 train_dataset = ImageToImage2D(args.train_dataset, tf_train)
 val_dataset = ImageToImage2D(args.train_dataset, tf_val)
 predict_dataset = Image2D(args.train_dataset)
 
-conv_depths = [int(args.width*(2**k)) for k in range(args.depth)]
+conv_depths = [int(args.width * (2**k)) for k in range(args.depth)]
 unet = UNet2D(args.in_channels, args.out_channels, conv_depths)
 training_args.num_layers = args.depth
 # loss = LogNLLLoss()
@@ -64,17 +66,15 @@ results_folder = os.path.join(args.checkpoint_path, args.model_name)
 if not os.path.exists(results_folder):
     os.makedirs(results_folder)
 
+
 class UnetTrainer(MerakTrainer):
 
     def create_optimizer(self, model):
         self.optimizer = optim.Adam(model.parameters(), lr=self.args.learning_rate)
 
         return self.optimizer
-    
-    def prepare_data(
-        self,
-        data
-        ):
+
+    def prepare_data(self, data):
         if not isinstance(data, (tuple, list)):
             if hasattr(data, "data"):
                 data = data.data
@@ -89,27 +89,26 @@ class UnetTrainer(MerakTrainer):
                 inputs_list += list(data.values())
                 return tuple(inputs_list)
             else:
-                raise NotImplementedError('only support data in tuple, list or dict')
+                raise NotImplementedError("only support data in tuple, list or dict")
         else:
             data = data[:-1]
             return data
 
     def get_loss_fn(self):
         criterion = LogNLLLoss()
-        def loss_fn(
-            outputs,
-            labels
-            ):
+
+        def loss_fn(outputs, labels):
             if isinstance(outputs, tuple):
                 outputs = outputs[0]
             if isinstance(labels, tuple):
                 labels = labels[0]
             labels = torch.argmax(labels, dim=3)
             # print(outputs.size(), labels.size())
-            loss = criterion(outputs,
-                             labels)
+            loss = criterion(outputs, labels)
             return loss
+
         return loss_fn
+
 
 trainer = UnetTrainer(
     model=unet,

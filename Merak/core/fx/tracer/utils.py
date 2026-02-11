@@ -15,18 +15,16 @@
 
 # Parts of the code here are adapted from https://github.com/huggingface/transformers/blob/v4.15.0/src/transformers/utils/fx.py
 
-__all__ = ['_generate_dummy_input']
+__all__ = ["_generate_dummy_input"]
 
-import random
-import torch
+import collections
 import functools
 import inspect
-import collections
+import random
+from typing import Any, Dict, List, Optional
 
-from typing import List, Optional, Type, Union, Dict
-from transformers.models.auto import get_values
+import torch
 from transformers import (
-    logging,
     CONFIG_MAPPING,
     MODEL_FOR_CAUSAL_LM_MAPPING,
     MODEL_FOR_IMAGE_CLASSIFICATION_MAPPING,
@@ -41,16 +39,11 @@ from transformers import (
     MODEL_MAPPING,
     GPT2DoubleHeadsModel,
 )
-
-from Merak.merak_args import MerakArguments
-
-logger = logging.get_logger(__name__)
+from transformers.models.auto import get_values
 
 
 def _generate_random_int(
-        low: int = 10, 
-        high: int = 20, 
-        forbidden_values: Optional[List[int]] = None
+    low: int = 10, high: int = 20, forbidden_values: Optional[List[int]] = None
 ) -> int:
     if forbidden_values is None:
         forbidden_values = []
@@ -59,25 +52,30 @@ def _generate_random_int(
         value = random.randint(low, high)
     return value
 
-def _generate_dummy_input(args: MerakArguments, model: torch.nn.Module) -> Dict[str, torch.Tensor]:
+
+def _generate_dummy_input(args: Any, model: torch.nn.Module) -> Dict[str, torch.Tensor]:
     """Generates dummy input for model inference recording."""
     sequence_length = args.seq_length
     batch_size = args.per_device_train_batch_size
 
-    encoder_sequence_length = \
-    sequence_length[0] if isinstance(sequence_length, 
-                                        (list, tuple)) else sequence_length
+    encoder_sequence_length = (
+        sequence_length[0]
+        if isinstance(sequence_length, (list, tuple))
+        else sequence_length
+    )
     decoder_sequence_length = (
-        sequence_length[1] if isinstance(sequence_length, (list, tuple)) 
+        sequence_length[1]
+        if isinstance(sequence_length, (list, tuple))
         else encoder_sequence_length
     )
     encoder_shape = [batch_size, encoder_sequence_length]
     decoder_shape = (
-        [batch_size, decoder_sequence_length] if decoder_sequence_length is not None 
+        [batch_size, decoder_sequence_length]
+        if decoder_sequence_length is not None
         else list(encoder_shape)
     )
     model_class = model.__class__
-    device = 'cpu' #model.device
+    device = "cpu"  # model.device
     # device = 'cpu'
     inputs_dict = dict()
 
@@ -88,8 +86,9 @@ def _generate_dummy_input(args: MerakArguments, model: torch.nn.Module) -> Dict[
 
     sig = inspect.signature(model.forward)
 
-    concrete_args = {p.name: p.default for p in sig.parameters.values() \
-                     if p.name not in input_names}
+    concrete_args = {
+        p.name: p.default for p in sig.parameters.values() if p.name not in input_names
+    }
 
     input_names = sig.parameters.keys() - concrete_args.keys()
 
@@ -97,20 +96,24 @@ def _generate_dummy_input(args: MerakArguments, model: torch.nn.Module) -> Dict[
         if input_name in ["labels", "start_positions", "end_positions"]:
             batch_size = encoder_shape[0]
             if model_class in get_values(MODEL_FOR_MULTIPLE_CHOICE_MAPPING):
-                inputs_dict["labels"] = torch.ones(batch_size, dtype=torch.long,
-                                                    device=device)
+                inputs_dict["labels"] = torch.ones(
+                    batch_size, dtype=torch.long, device=device
+                )
             elif model_class in get_values(MODEL_FOR_QUESTION_ANSWERING_MAPPING):
-                inputs_dict["start_positions"] = torch.zeros(batch_size, dtype=torch.long, 
-                                                                device=device)
-                inputs_dict["end_positions"] = torch.zeros(batch_size, dtype=torch.long, 
-                                                            device=device)
+                inputs_dict["start_positions"] = torch.zeros(
+                    batch_size, dtype=torch.long, device=device
+                )
+                inputs_dict["end_positions"] = torch.zeros(
+                    batch_size, dtype=torch.long, device=device
+                )
             elif model_class in [
                 *get_values(MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING),
                 *get_values(MODEL_FOR_NEXT_SENTENCE_PREDICTION_MAPPING),
                 *get_values(MODEL_FOR_IMAGE_CLASSIFICATION_MAPPING),
             ]:
-                inputs_dict["labels"] = torch.zeros(batch_size, dtype=torch.long, 
-                                                    device=device)
+                inputs_dict["labels"] = torch.zeros(
+                    batch_size, dtype=torch.long, device=device
+                )
             elif model_class in [
                 *get_values(MODEL_FOR_TOKEN_CLASSIFICATION_MAPPING),
                 *get_values(MODEL_FOR_CAUSAL_LM_MAPPING),
@@ -118,22 +121,24 @@ def _generate_dummy_input(args: MerakArguments, model: torch.nn.Module) -> Dict[
                 *get_values(MODEL_FOR_SEQ_TO_SEQ_CAUSAL_LM_MAPPING),
                 GPT2DoubleHeadsModel,
             ]:
-                inputs_dict["labels"] = torch.zeros(decoder_shape, dtype=torch.long, 
-                                                    device=device)
+                inputs_dict["labels"] = torch.zeros(
+                    decoder_shape, dtype=torch.long, device=device
+                )
             elif model_class in get_values(MODEL_FOR_PRETRAINING_MAPPING):
-                inputs_dict["labels"] = torch.zeros(encoder_shape, dtype=torch.long, 
-                                                    device=device)
+                inputs_dict["labels"] = torch.zeros(
+                    encoder_shape, dtype=torch.long, device=device
+                )
             else:
                 raise NotImplementedError(f"{model_class} not supported yet.")
         elif "visual_feats" in input_name:
-                inputs_dict[input_name] = torch.zeros(
-                    encoder_shape
-                    + [
-                        model.config.visual_feat_dim,
-                    ],
-                    dtype=torch.float,
-                    device=device,
-                )
+            inputs_dict[input_name] = torch.zeros(
+                encoder_shape
+                + [
+                    model.config.visual_feat_dim,
+                ],
+                dtype=torch.float,
+                device=device,
+            )
         elif "visual_pos" in input_name:
             inputs_dict[input_name] = torch.zeros(
                 encoder_shape
@@ -147,13 +152,15 @@ def _generate_dummy_input(args: MerakArguments, model: torch.nn.Module) -> Dict[
             inputs_dict[input_name] = torch.zeros(
                 *encoder_shape,
                 model.config.input_feat_per_channel,
-                dtype=torch.float, device=device
+                dtype=torch.float,
+                device=device,
             )
         elif "input_values" in input_name:
             batch_size, seq_length = encoder_shape
             # Generating big sequence length for audio inputs.
-            inputs_dict[input_name] = torch.zeros(batch_size, seq_length,
-                                                    dtype=torch.float, device=device)
+            inputs_dict[input_name] = torch.zeros(
+                batch_size, seq_length, dtype=torch.float, device=device
+            )
         elif "mask" in input_name or "ids" in input_name:
             shape = encoder_shape if "decoder" not in input_name else decoder_shape
             inputs_dict[input_name] = torch.ones(shape, dtype=torch.long, device=device)
@@ -174,13 +181,20 @@ def _generate_dummy_input(args: MerakArguments, model: torch.nn.Module) -> Dict[
                 image_size = (image_size, image_size)
             height, width = image_size
             inputs_dict[input_name] = torch.zeros(
-                batch_size, num_channels, height, width, dtype=torch.float32, device=device
+                batch_size,
+                num_channels,
+                height,
+                width,
+                dtype=torch.float32,
+                device=device,
             )
         else:
 
             shape = encoder_shape if "decoder" not in input_name else decoder_shape
             shape += [model.config.hidden_size]
-            inputs_dict[input_name] = torch.ones(shape, dtype=torch.float, device=device)
+            inputs_dict[input_name] = torch.ones(
+                shape, dtype=torch.float, device=device
+            )
 
         # if args.fp16 or args.half_precision_backend == "apex":
         #     half_inputs_dict = {}

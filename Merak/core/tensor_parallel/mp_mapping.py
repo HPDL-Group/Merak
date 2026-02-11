@@ -15,44 +15,48 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from transformers.utils.fx import _generate_supported_model_class_names
 from typing import Callable, Optional
 
-SUPPORTED_MODEL_NAMES = [
-    "bert",
-    "gpt2",
-    "t5",
-    "vit"
-]
+from transformers.utils.fx import _generate_supported_model_class_names
+
+SUPPORTED_MODEL_NAMES = ["bert", "gpt2", "t5", "vit"]
 
 MP_MODEL_MAPPING = {
-    'gpt2': {
-        'input_output_mapping':[(1, 3, 'col'), (1, 1,'row'),
-                                (1, 4, 'col'), (4, 1, 'row')],
-        'tp_attr_list':['num_heads', 'split_size']         
+    "gpt2": {
+        "input_output_mapping": [
+            (1, 3, "col"),
+            (1, 1, "row"),
+            (1, 4, "col"),
+            (4, 1, "row"),
+        ],
+        "tp_attr_list": ["num_heads", "split_size"],
     },
-    't5': {
-        'col_para_list':['Attention.q', 'Attention.k',
-                         'Attention.v', 'DenseReluDense.wi'],
-        'row_para_list':['Attention.o', 'DenseReluDense.wo'],
-        'weight_change_list':[('relative_attention_bias', 1)],
-        'tp_attr_list':['n_heads', 'inner_dim']
+    "t5": {
+        "col_para_list": [
+            "Attention.q",
+            "Attention.k",
+            "Attention.v",
+            "DenseReluDense.wi",
+        ],
+        "row_para_list": ["Attention.o", "DenseReluDense.wo"],
+        "weight_change_list": [("relative_attention_bias", 1)],
+        "tp_attr_list": ["n_heads", "inner_dim"],
     },
-    'bert':{
-        'col_para_list':['query', 'key', 'value', 'intermediate.dense'],
-        'row_para_list':['output.dense'],
-        'tp_attr_list':['num_attention_heads','all_head_size']
+    "bert": {
+        "col_para_list": ["query", "key", "value", "intermediate.dense"],
+        "row_para_list": ["output.dense"],
+        "tp_attr_list": ["num_attention_heads", "all_head_size"],
     },
-    'vit':{
-        'col_para_list':['query', 'key', 'value', 'intermediate.dense'],
-        'row_para_list':['output.dense'],
-        'tp_attr_list':['num_attention_heads','all_head_size']
+    "vit": {
+        "col_para_list": ["query", "key", "value", "intermediate.dense"],
+        "row_para_list": ["output.dense"],
+        "tp_attr_list": ["num_attention_heads", "all_head_size"],
     },
 }
 
+
 def get_mp_layer_lists(model_class: Callable) -> Optional[dict]:
     for model_name in SUPPORTED_MODEL_NAMES:
-        if model_class.__name__ in \
-            _generate_supported_model_class_names(model_name):
+        if model_class.__name__ in _generate_supported_model_class_names(model_name):
             return MP_MODEL_MAPPING[model_name]
     return None

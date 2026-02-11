@@ -16,12 +16,15 @@
 # limitations under the License.
 
 __all__ = [
-    'MerakTrainer', 'init', 'get_grid', 'get_args',
-    'get_topo', 'MerakArguments', 'print_rank_0',
-    'init_empty_weights'
+    "MerakTrainer",
+    "init",
+    "MerakArguments",
+    "init_empty_weights",
+    "get_logger",
 ]
 
-from .initialize import init, get_grid, get_topo, print_rank_0
+from .initialize import init
+from .dist_logger import get_distributed_logger as get_logger
+from .merak_args import MerakArguments
 from .merak_trainer import MerakTrainer
-from .merak_args import MerakArguments, get_args
 from .utils import init_empty_weights

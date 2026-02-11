@@ -1,0 +1,81 @@
+workers:
+  - worker_id: "worker_0"
+    command: "python fake_worker.py --worker-id worker_0 --epochs 100 --sleep-interval 0.1"
+    working_dir: "."
+    env: {}
+    pid_file: "/tmp/worker_0.pid"
+    worker_type: "training"
+    max_restarts: 3
+    restart_delay: 5.0
+
+  - worker_id: "worker_1"
+    command: "python fake_worker.py --worker-id worker_1 --epochs 100 --sleep-interval 0.15"
+    working_dir: "."
+    env: {}
+    pid_file: "/tmp/worker_1.pid"
+    worker_type: "training"
+    max_restarts: 3
+    restart_delay: 5.0
+
+  - worker_id: "worker_2"
+    command: "python fake_worker.py --worker-id worker_2 --epochs 100 --sleep-interval 0.2"
+    working_dir: "."
+    env: {}
+    pid_file: "/tmp/worker_2.pid"
+    worker_type: "training"
+    max_restarts: 5
+    restart_delay: 10.0
+
+monitoring:
+  interval: 1.0
+  heartbeat_timeout: 10.0
+  zombie_detection: true
+  cpu_threshold: 0.1
+  memory_threshold: 0.1
+
+recovery:
+  enable_auto_recovery: true
+  stop_all_on_failure: true
+  task_reassignment: true
+  recovery_timeout: 60.0
+  max_recovery_attempts: 3
+
+communication:
+  adapter_type: "mock"
+  adapter_config:
+    host: "127.0.0.1"
+    port_base: 5550
+    timeout: 1000
+
+logging:
+  level: "INFO"
+  file: "logs/procguard.log"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+state:
+  state_file: "procguard_state.json"
+  auto_save: true
+  save_interval: 5.0
+
+web:
+  enabled: true
+  host: "0.0.0.0"
+  port: 5001
+
+slurm:
+  enabled: false
+  gpu_count_per_node: 1
+  master_port: 29500
+  worker_id_format: "{hostname}-{local_rank}"
+  auto_detect: true
+  sbatch_template: null
+
+pytorch_dist:
+  enabled: false
+  backend: "nccl"
+  init_method: "env"
+  master_addr: null
+  master_port: 29500
+  local_rank_env_var: "LOCAL_RANK"
+  rank_env_var: "RANK"
+  world_size_env_var: "WORLD_SIZE"

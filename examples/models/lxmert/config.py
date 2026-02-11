@@ -1,9 +1,7 @@
 def load_config(model_name):
     if model_name == "lxmert-vqa-uncased":
         config = {
-            "architectures": [
-                "LxmertForQuestionAnswering"
-            ],
+            "architectures": ["LxmertForQuestionAnswering"],
             "attention_probs_dropout_prob": 0.1,
             "hidden_act": "gelu",
             "hidden_dropout_prob": 0.1,
@@ -16,11 +14,7 @@ def load_config(model_name):
             "model_type": "lxmert",
             "num_attention_heads": 12,
             "num_attr_labels": 400,
-            "num_hidden_layers": {
-                "cross_encoder": 5,
-                "language": 9,
-                "vision": 5
-            },
+            "num_hidden_layers": {"cross_encoder": 5, "language": 9, "vision": 5},
             "num_object_labels": 1600,
             "num_qa_labels": 3129,
             "r_layers": 5,
@@ -36,10 +30,10 @@ def load_config(model_name):
             "visual_obj_loss": True,
             "visual_pos_dim": 4,
             "vocab_size": 30522,
-            'return_dict': False,
+            "return_dict": False,
             "use_cache": False,
-            "x_layers": 5
-            }
+            "x_layers": 5,
+        }
     else:
         raise ValueError(f"No {model_name} config")
     return config

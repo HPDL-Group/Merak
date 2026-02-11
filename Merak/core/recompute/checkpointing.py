@@ -20,19 +20,22 @@
 # Parts of the code here are adapted from https://github.com/NVIDIA/Megatron-LM/blob/b886b7bb972afe72bac0f5de4f42a4a7bae8ebef/megatron/mpu/random.py
 # Parts of the code here are adapted from https://github.com/microsoft/DeepSpeed/blob/85acf14c58658964a796c5c901b58123f99fb1df/deepspeed/runtime/activation_checkpointing/checkpointing.py
 
-import copy
-import torch
 import contextlib
+import copy
+
+import torch
 import torch.distributed as dist
-
 from torch import _C
-from torch.cuda import _lazy_call, device as device_ctx_manager
+from torch.cuda import _lazy_call
+from torch.cuda import device as device_ctx_manager
 
-from .utils import move_to_device
-from ..printer import see_memory_usage, logger
+from Merak import get_logger
+
 from .. import mpu
+from ..printer import see_memory_usage
+from .utils import move_to_device
 
-__all__ = ['pre_checkpoint', 'get_rng_tracker']
+__all__ = ["pre_checkpoint", "get_rng_tracker"]
 
 # MP parameters
 mp_rank = None
@@ -41,9 +44,10 @@ mp_group = None
 
 
 # Default name for the model parallel rng tracker.
-_MODEL_PARALLEL_RNG_TRACKER_NAME = 'model-parallel-rng'
+_MODEL_PARALLEL_RNG_TRACKER_NAME = "model-parallel-rng"
 transport_stream = None
 device = None
+
 
 def detach_variable(inputs, device=None):
     if isinstance(inputs, tuple):
@@ -67,7 +71,8 @@ def detach_variable(inputs, device=None):
     else:
         raise RuntimeError(
             "Only tuple of tensors is supported. Got Unsupported input type: ",
-            type(inputs).__name__)
+            type(inputs).__name__,
+        )
 
 
 def _set_cuda_rng_state(new_state, device=-1):
@@ -79,19 +84,20 @@ def _set_cuda_rng_state(new_state, device=-1):
     with a single change: the input state is not cloned. Cloning caused
     major performance issues for +4 GPU cases.
     """
-    if hasattr(_C, '_cuda_setRNGState') and callable(_C._cuda_setRNGState):
+    if hasattr(_C, "_cuda_setRNGState") and callable(_C._cuda_setRNGState):
         # older PyTorch
         def cb():
             with device_ctx_manager(device):
                 _C._cuda_setRNGState(new_state)
+
     else:
         # newer PyTorch
         if device == -1:
-            device = torch.device('cuda')
+            device = torch.device("cuda")
         elif isinstance(device, str):
             device = torch.device(device)
         elif isinstance(device, int):
-            device = torch.device('cuda', device)
+            device = torch.device("cuda", device)
 
         def cb():
             idx = device.index
@@ -111,6 +117,7 @@ class RNGStatesTracker:
     rng state, we can perform operations and return to our starting
     cuda state.
     """
+
     def __init__(self):
         # Map from a string name to the cuda rng state.
         self.states_ = {}
@@ -136,11 +143,11 @@ class RNGStatesTracker:
         """Track the rng state."""
         # Check seed is not already used.
         if seed in self.seeds_:
-            raise Exception('seed {} already exists'.format(seed))
+            raise Exception("seed {} already exists".format(seed))
         self.seeds_.add(seed)
         # Check that state is not already defined.
         if name in self.states_:
-            raise Exception('cuda rng state {} already exists'.format(name))
+            raise Exception("cuda rng state {} already exists".format(name))
         # Get the current rng state.
         if torch.cuda.is_available():
             orig_rng_state = torch.cuda.get_rng_state()
@@ -161,7 +168,7 @@ class RNGStatesTracker:
         the original state."""
         # Check if we have added the state
         if name not in self.states_:
-            raise Exception('cuda rng state {} is not added'.format(name))
+            raise Exception("cuda rng state {} is not added".format(name))
         if torch.cuda.is_available():
             # Store current rng state.
             orig_cuda_rng_state = torch.cuda.get_rng_state()
@@ -212,43 +219,47 @@ def model_parallel_cuda_manual_seed(seed):
     """
     # 2718 is just for fun and any POSITIVE value will work.
     offset = seed + 2718
-    
-    from ...initialize import get_topo
-    topo = get_topo()
-    sp_idx = topo.axes.index('sequence')
-    mp_idx = topo.axes.index('model')
-    
+    # model_parallel_seed = offset + mpu.get_model_parallel_rank()
+    sp_idx = mpu.get_sequence_parallel_rank()
+    mp_idx = mpu.get_model_parallel_rank()
+
     if sp_idx < mp_idx:
-        model_parallel_seed = offset \
-            + mpu.get_model_parallel_world_size() \
-            * mpu.get_sequence_parallel_rank() \
+        model_parallel_seed = (
+            offset
+            + mpu.get_model_parallel_world_size() * mpu.get_sequence_parallel_rank()
             + mpu.get_model_parallel_rank()
+        )
     else:
-        model_parallel_seed = offset \
-        + mpu.get_sequence_parallel_world_size() \
-        * mpu.get_model_parallel_rank() 
-        + mpu.get_sequence_parallel_rank()    
-    
+        model_parallel_seed = (
+            offset
+            + mpu.get_sequence_parallel_world_size() * mpu.get_model_parallel_rank()
+            + mpu.get_sequence_parallel_rank()
+        )
+
     # Data parallel gets the original seed.
     data_parallel_seed = seed
+    logger = get_logger("simple")
 
-    if torch.distributed.get_rank() == 0:
-        logger.info(
-            '> initializing model parallel cuda seeds on global rank {}, '
-            'model parallel rank {}, and data parallel rank {} with '
-            'model parallel seed: {} and data parallel seed: {}'.format(
-                torch.distributed.get_rank(),
-                mpu.get_model_parallel_rank(),
-                mpu.get_data_parallel_rank(),
-                model_parallel_seed,
-                data_parallel_seed),
-        )
+    logger.info(
+        "> initializing model parallel cuda seeds on global rank {}, "
+        "model parallel rank {}, and data parallel rank {} with "
+        "model parallel seed: {} and data parallel seed: {}".format(
+            torch.distributed.get_rank(),
+            mpu.get_model_parallel_rank(),
+            mpu.get_data_parallel_rank(),
+            model_parallel_seed,
+            data_parallel_seed,
+        ),
+        ranks=[0],
+    )
     _RNG_STATE_TRACKER.reset()
     # Set the default state.
-    torch.cuda.manual_seed(data_parallel_seed)
+    if torch.cuda.device_count() > 0:
+        torch.cuda.manual_seed(data_parallel_seed)
+    else:
+        torch.manual_seed(data_parallel_seed)
     # and model parallel state.
-    _RNG_STATE_TRACKER.add(_MODEL_PARALLEL_RNG_TRACKER_NAME,
-                                model_parallel_seed)
+    _RNG_STATE_TRACKER.add(_MODEL_PARALLEL_RNG_TRACKER_NAME, model_parallel_seed)
 
 
 def extract_tensors(all_objects):
@@ -307,24 +318,26 @@ def merge_tensors(tensor_objects, non_tensor_objects, tensor_flags):
 
 class CheckpointFunction(torch.autograd.Function):
     """This function is adapted from torch.utils.checkpoint with
-       two main changes:
-           1) torch.cuda.set_rng_state is replaced with `_set_cuda_rng_state`
-           2) the states in the model parallel tracker are also properly
-              tracked/set/reset.
-           3) Performance activation partitioning, contiguous memory
-           optimization
-           4) CPU Checkpointing
-           5) Profile forward and backward functions
+    two main changes:
+        1) torch.cuda.set_rng_state is replaced with `_set_cuda_rng_state`
+        2) the states in the model parallel tracker are also properly
+           tracked/set/reset.
+        3) Performance activation partitioning, contiguous memory
+        optimization
+        4) CPU Checkpointing
+        5) Profile forward and backward functions
     """
+
     @staticmethod
     def forward(ctx, run_function, all_outputs, *args):
 
         def save_args_for_backward(*all_args):
-            tensor_args, non_tensor_args, tensor_flags = extract_tensors(all_objects=all_args)
+            tensor_args, non_tensor_args, tensor_flags = extract_tensors(
+                all_objects=all_args
+            )
             ctx.save_for_backward(*tensor_args)
             ctx.non_tensor_args = non_tensor_args
             ctx.tensor_flags = tensor_flags
-
 
         ctx.run_function = run_function
         global mp_rank, mp_size, mp_group
@@ -343,9 +356,9 @@ class CheckpointFunction(torch.autograd.Function):
                 transport_stream = torch.cuda.Stream(device=device)
             ctx.fwd_cuda_rng_state = torch.cuda.get_rng_state()
         else:
-            device = 'cpu'
+            device = "cpu"
 
-            #just in case something funky is happening such as reuse of inputs
+            # just in case something funky is happening such as reuse of inputs
         inputs = move_to_device(args, device)
 
         # Copy the rng states.
@@ -368,8 +381,7 @@ class CheckpointFunction(torch.autograd.Function):
 
         # Tensors returned from forward() may not be differentiable.
         if torch.is_tensor(outputs):
-            non_grad_outputs = [outputs] \
-                if not outputs.is_floating_point() else []
+            non_grad_outputs = [outputs] if not outputs.is_floating_point() else []
         else:
             non_grad_outputs = [
                 o for o in outputs if torch.is_tensor(o) and not o.is_floating_point()
@@ -396,8 +408,10 @@ class CheckpointFunction(torch.autograd.Function):
 
         see_memory_usage("In backward checkpointing code", force=False)
         if not torch.autograd._is_checkpoint_valid():
-            raise RuntimeError("Checkpointing is not compatible with .grad(), "
-                               "please use .backward() if possible")
+            raise RuntimeError(
+                "Checkpointing is not compatible with .grad(), "
+                "please use .backward() if possible"
+            )
 
         inputs = ctx.saved_tensors
         detached_inputs = detach_variable(inputs)
@@ -406,7 +420,7 @@ class CheckpointFunction(torch.autograd.Function):
         detached_inputs = merge_tensors(
             tensor_objects=detached_inputs,
             non_tensor_objects=ctx.non_tensor_args,
-            tensor_flags=ctx.tensor_flags
+            tensor_flags=ctx.tensor_flags,
         )
 
         # Store the current states.
@@ -422,14 +436,12 @@ class CheckpointFunction(torch.autograd.Function):
 
         get_rng_tracker().set_states(ctx.fwd_rng_state_tracker)
 
-        see_memory_usage(
-            "In backward checkpointing code before forward", force=False)
+        see_memory_usage("In backward checkpointing code before forward", force=False)
 
         with torch.enable_grad():
             outputs = ctx.run_function(*detached_inputs)
 
-        see_memory_usage(
-            "In backward checkpointing code after forward", force=False)
+        see_memory_usage("In backward checkpointing code after forward", force=False)
         # Set the states back to what it was at the start of this function.
         torch.set_rng_state(bwd_cpu_rng_state)
         if torch.cuda.is_available():
@@ -437,7 +449,7 @@ class CheckpointFunction(torch.autograd.Function):
         get_rng_tracker().set_states(bwd_rng_state_tracker)
 
         if isinstance(outputs, torch.Tensor):
-            outputs = (outputs, )
+            outputs = (outputs,)
 
         # Filter out non tensor outputs
         outputs, _, _ = extract_tensors(all_objects=outputs)
@@ -452,13 +464,13 @@ class CheckpointFunction(torch.autograd.Function):
                 output_tensors.append(out)
                 grad_tensors.append(grad)
 
-        see_memory_usage(
-            "In backward checkpointing code before backward", force=False)
+        see_memory_usage("In backward checkpointing code before backward", force=False)
 
         torch.autograd.backward(output_tensors, grad_tensors)
 
         see_memory_usage(
-            "After backward checkpointing code after backward", force=False)
+            "After backward checkpointing code after backward", force=False
+        )
 
         ret_list = [None, None]  # first None for ctx
         for inp in detached_inputs:
@@ -472,7 +484,7 @@ class CheckpointFunction(torch.autograd.Function):
 
 def checkpoint(function, *args):
     """Checkpoint a model or part of the model.
-    This has been directly copied from torch.utils.checkpoint. """
+    This has been directly copied from torch.utils.checkpoint."""
 
     all_outputs = []
     CheckpointFunction.apply(function, all_outputs, *args)
@@ -489,8 +501,9 @@ class PreCheckpointFunction(torch.autograd.Function):
     def forward(ctx, run_function, all_outputs, *args):
 
         def save_args_for_backward(*all_args):
-            tensor_args, non_tensor_args, tensor_flags = \
-                extract_tensors(all_objects=all_args)
+            tensor_args, non_tensor_args, tensor_flags = extract_tensors(
+                all_objects=all_args
+            )
             ctx.save_for_backward(*tensor_args)
             ctx.non_tensor_args = non_tensor_args
             ctx.tensor_flags = tensor_flags
@@ -500,9 +513,9 @@ class PreCheckpointFunction(torch.autograd.Function):
         if torch.cuda.is_available():
             device = torch.cuda.current_device()
         else:
-            device = 'cpu'
+            device = "cpu"
 
-        #just in case something funky is happening such as reuse of inputs
+        # just in case something funky is happening such as reuse of inputs
         inputs = move_to_device(args, device)
 
         with torch.no_grad():
@@ -540,21 +553,19 @@ class PreCheckpointFunction(torch.autograd.Function):
         detached_inputs = merge_tensors(
             tensor_objects=detached_inputs,
             non_tensor_objects=ctx.non_tensor_args,
-            tensor_flags=ctx.tensor_flags
+            tensor_flags=ctx.tensor_flags,
         )
 
         with torch.enable_grad():
             outputs = ctx.run_function(*detached_inputs)
 
-
         if isinstance(outputs, torch.Tensor):
-            outputs = (outputs, )
+            outputs = (outputs,)
 
         # Filter out non tensor outputs
         ctx.outputs, _, _ = extract_tensors(all_objects=outputs)
         ctx.detached_inputs = detached_inputs
 
-        
     @staticmethod
     def backward(ctx, *grads):
 
@@ -563,8 +574,10 @@ class PreCheckpointFunction(torch.autograd.Function):
         # have been used
 
         if not torch.autograd._is_checkpoint_valid():
-            raise RuntimeError("Checkpointing is not compatible with .grad(), "
-                               "please use .backward() if possible")
+            raise RuntimeError(
+                "Checkpointing is not compatible with .grad(), "
+                "please use .backward() if possible"
+            )
 
         # print(torch.distributed.get_rank(), 'recompute in backward')
         PreCheckpointFunction.pre_recompute(ctx)
@@ -595,7 +608,7 @@ class PreCheckpointFunction(torch.autograd.Function):
 
 def pre_checkpoint(function, *args):
     """Checkpoint a model or part of the model.
-    This has been directly copied from torch.utils.checkpoint. """
+    This has been directly copied from torch.utils.checkpoint."""
 
     all_outputs = []
     PreCheckpointFunction.apply(function, all_outputs, *args)
@@ -620,9 +633,9 @@ class RNGManager:
         self.state_dic[buffer_id] = (
             fwd_cpu_rng_state,
             fwd_cuda_rng_state,
-            fwd_rng_state_tracker
+            fwd_rng_state_tracker,
         )
-    
+
     def set_recompute_rng_state(self, buffer_id):
         bwd_cpu_rng_state = torch.get_rng_state()
         if torch.cuda.is_available():
@@ -632,7 +645,9 @@ class RNGManager:
         bwd_rng_state_tracker = get_rng_tracker().get_states()
 
         # Set the states to what it used to be before the forward pass.
-        fwd_cpu_rng_state, fwd_cuda_rng_state, fwd_rng_state_tracker = self.state_dic[buffer_id]
+        fwd_cpu_rng_state, fwd_cuda_rng_state, fwd_rng_state_tracker = self.state_dic[
+            buffer_id
+        ]
         torch.set_rng_state(fwd_cpu_rng_state)
         if fwd_cuda_rng_state is not None:
             _set_cuda_rng_state(fwd_cuda_rng_state)
@@ -640,11 +655,13 @@ class RNGManager:
         self.state_dic[buffer_id] = (
             bwd_cpu_rng_state,
             bwd_cuda_rng_state,
-            bwd_rng_state_tracker
+            bwd_rng_state_tracker,
         )
 
     def restore_bwd_rng_state(self, buffer_id):
-        bwd_cpu_rng_state, bwd_cuda_rng_state, bwd_rng_state_tracker = self.state_dic[buffer_id]
+        bwd_cpu_rng_state, bwd_cuda_rng_state, bwd_rng_state_tracker = self.state_dic[
+            buffer_id
+        ]
         torch.set_rng_state(bwd_cpu_rng_state)
         if bwd_cuda_rng_state is not None:
             _set_cuda_rng_state(bwd_cuda_rng_state)

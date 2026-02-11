@@ -15,24 +15,34 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import Merak
-from Merak import MerakArguments
-from Merak import MerakTrainer
-
 import os
-from transformers import (
-    HfArgumentParser
-)
 
+import torchvision
 from config import get_config
 from data import build_loader
-import torchvision
+from transformers import HfArgumentParser
+
+import Merak
+from Merak import MerakArguments, MerakTrainer
 
 
 def parse_option(parser):
-    group = parser.add_argument_group('Torchvision model training and evaluation script')
-    group.add_argument('--cfg', type=str, required=True, metavar="FILE", help='path to config file', )
-    group.add_argument('--data_path', type=str, default=None, help='path to data folder', )
+    group = parser.add_argument_group(
+        "Torchvision model training and evaluation script"
+    )
+    group.add_argument(
+        "--cfg",
+        type=str,
+        required=True,
+        metavar="FILE",
+        help="path to config file",
+    )
+    group.add_argument(
+        "--data_path",
+        type=str,
+        default=None,
+        help="path to data folder",
+    )
 
     return parser
 
@@ -45,13 +55,13 @@ def main(config):
     trainer = MerakTrainer(
         model=model,
         args=training_args,
-        train_dataset=dataset_train, 
-        eval_dataset=dataset_val, 
+        train_dataset=dataset_train,
+        eval_dataset=dataset_val,
     )
     trainer.train()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     pp = 2
     tp = 1
     dp = 2
@@ -60,7 +70,7 @@ if __name__ == '__main__':
     hfparser = HfArgumentParser(MerakArguments)
     parser = parse_option(hfparser)
     training_args, args = parser.parse_args_into_dataclasses()
-    
+
     # using data config from swin transformer
     config = get_config(args)
     main(config)

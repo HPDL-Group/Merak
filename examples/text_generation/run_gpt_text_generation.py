@@ -15,36 +15,34 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import enum
+import random
+
+import numpy as np
+import torch
+from config import load_config
+from transformers import GPT2Config, GPT2LMHeadModel, HfArgumentParser, set_seed
+from utils import create_tokenizer
+
 # using our distributed trainer
 import Merak
-from Merak import MerakArguments, print_rank_0
+from Merak import MerakArguments
 from Merak.inference import text_generation_pipeline
-from utils import create_tokenizer
-from config import load_config
 
-from transformers import (
-    set_seed,
-    HfArgumentParser,
-    GPT2LMHeadModel,
-    GPT2Config,
-)
-import torch
-import enum
-
-import random
-import numpy as np
 
 def parse_option(parser):
     # easy config modification
-    parser.add_argument('--cache-dir', type=str, help='where to save cache')
-    parser.add_argument('--model-name', type=str, help='gpt2')
+    parser.add_argument("--cache-dir", type=str, help="where to save cache")
+    parser.add_argument("--model-name", type=str, help="gpt2")
 
     return parser
+
 
 class ReturnType(enum.Enum):
     TENSORS = 0
     NEW_TEXT = 1
     FULL_TEXT = 2
+
 
 def main():
     # init dist
@@ -69,9 +67,7 @@ def main():
     set_seed(training_args.seed)
 
     config_kwarg = load_config(args.model_name)
-    config = GPT2Config(
-            **config_kwarg
-        )
+    config = GPT2Config(**config_kwarg)
 
     # create tokenizer
     tokenizer = create_tokenizer(args.cache_dir, "IDEA-CCNL/Wenzhong-GPT2-110M", config)
@@ -89,7 +85,6 @@ def main():
 
     # Training
     pipeline.generate_samples_interactive()
-
 
 
 if __name__ == "__main__":

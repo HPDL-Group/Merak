@@ -20,9 +20,9 @@ def load_config(model_name):
             "transformers_version": "4.4.0.dev0",
             "type_vocab_size": 2,
             "use_cache": True,
-            'return_dict': False,
-            "vocab_size": 30522
-            }
+            "return_dict": False,
+            "vocab_size": 30522,
+        }
     else:
         raise ValueError(f"No {model_name} config")
     return config

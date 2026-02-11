@@ -1,0 +1,81 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+#
+# Modified from original source.
+# Original: https://github.com/meta-pytorch/torchft-8ef24c055ebb495caf39fb2acdbddb8ebcebdf19/blob/main/torchft/ddp.py
+# Modifications Copyright (c) 2026.
+
+"""
+Distributed Data Parallel
+==========================
+
+This module implements a DistributedDataParallel wrapper that works with the
+Manager to provide fault tolerance.
+"""
+
+import os
+import sys
+from typing import cast, Optional, TYPE_CHECKING
+from unittest.mock import patch
+
+import torch
+import torch.distributed as dist
+from torch import nn
+from torch.distributed.algorithms.join import Joinable
+from torch.nn import parallel
+
+from .process_group import ProcessGroupDummy
+
+
+
+class DistributedDataParallel(parallel.DistributedDataParallel):
+    """
+    This is a patched DistributedDataParallel implementation that makes it
+    compatible with torchft.
+
+    Important notes:
+
+    * This requires states to be synced on step 0 using an external mechanism
+      rather than an internal broadcast (torchft.Manager will do this).
+    * Using non-basic features of the DDP may cause your model to catch fire as
+      they haven't been tested with torchft.
+    * This doesn't any sanity checks such as verifying parameter sizes are the
+      same across workers.
+    """
+
+    def __init__(self, recover: "Recover", module: nn.Module, **kwargs: object) -> None:
+        # use a dummy PG to soak up the init all reduce, actual comms will go
+        # through the comm_hook.
+        pg = ProcessGroupDummy(0, 1)
+
+        super().__init__(
+            module,
+            process_group=pg,
+            # HACK: This forces the reducer to never rebuild buckets.
+            # The reducer normally rebuilds the buckets after the first training
+            # step which can improve performance but is incompatible with
+            # torchft as it will cause the buckets to diverge for recovering
+            # replicas.
+            find_unused_parameters=True,
+            # pyre-fixme[6]: got object
+            **kwargs,
+        )
+
+        self.register_comm_hook(recover, self._comm_hook)
+
+    @staticmethod
+    def _comm_hook(
+        state: "Recover", bucket: dist.GradBucket
+    ) -> torch.futures.Future[torch.Tensor]:
+        work = state.allreduce(bucket.buffer())
+        work.wait()
+        fut = work.get_future()
+
+        # We need to return the underlying future here otherwise
+        # this can hang
+        fut = cast("_ManagedFuture[torch.Tensor]", fut)
+        assert fut._fut
+        return fut._fut

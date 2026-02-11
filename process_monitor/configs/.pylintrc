@@ -1,0 +1,20 @@
+[MASTER]
+disable=missing-docstring,invalid-name,too-many-instance-attributes,too-many-public-methods
+max-line-length=100
+extension-pkg-allow-list=psutil
+
+[MESSAGES CONTROL]
+# 禁用某些不必要的警告
+disable=duplicate-code,too-few-public-methods,consider-using-f-string
+
+[FORMAT]
+max-line-length=100
+good-names=i,j,k,ex,fp,fd,fn
+
+[DESIGN]
+max-args=10
+max-locals=15
+
+[IMPORTS]
+known-standard-library=os,sys,subprocess,threading,time,logging,datetime,pathlib,typing,json,socket,signal
+known-third-party=psutil,pyzmq,flask,flask_socketio,eventlet

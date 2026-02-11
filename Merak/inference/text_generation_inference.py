@@ -18,30 +18,32 @@
 # Parts of the code here are adapted from https://github.com/NVIDIA/Megatron-LM/blob/v2.3/megatron/text_generation_utils.py
 
 import os
+from typing import Any, Callable, Iterator, List, Optional, Tuple, Union
+
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.distributed as dist
-from torch.nn import CrossEntropyLoss
 from transformers import PreTrainedTokenizerBase
-from typing import Union, Optional, Iterator, Tuple, List, Any, Callable
 
+from Merak import get_logger
+
+from ..core import PipelineEngine, PipelineModule, mpu
+from ..core.checkpoint import CheckpointLoader
+from ..merak_args import MerakArguments, manual_set_args, mergeargs
 from ..utils import BaseParams
-from ..initialize import get_grid, get_topo
-from ..merak_args import MerakArguments, mergeargs, manual_set_args
-from ..core import mpu, PipelineEngine, checkpoint, PipelineModule
-from ..core.recompute import checkpoint as checkpoint_func
+
 
 def top_k_logits(
-        logits: torch.Tensor,
-        top_k: int = 0,
-        top_p: float = 0.0,
-        filter_value: float = -float('Inf')
-    ) -> torch.Tensor:
-    """ This function has been mostly taken from huggingface conversational
-     ai code at
-         https://medium.com/huggingface/how-to-build-a-state-of-the-art-
-              conversational-ai-with-transfer-learning-2d818ac26313 """
+    logits: torch.Tensor,
+    top_k: int = 0,
+    top_p: float = 0.0,
+    filter_value: float = -float("Inf"),
+) -> torch.Tensor:
+    """This function has been mostly taken from huggingface conversational
+    ai code at
+        https://medium.com/huggingface/how-to-build-a-state-of-the-art-
+             conversational-ai-with-transfer-learning-2d818ac26313"""
 
     if top_k > 0:
         # Remove all tokens with a probability less than the
@@ -51,10 +53,8 @@ def top_k_logits(
 
     if top_p > 0.0:
         # Cconvert to 1D
-        sorted_logits, sorted_indices = torch.sort(
-            logits, descending=True, dim=-1)
-        cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1),
-                                        dim=-1)
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
+        cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
 
         # Remove tokens with cumulative probability above the threshold
         sorted_indices_to_remove = cumulative_probs > top_p
@@ -68,31 +68,36 @@ def top_k_logits(
 
     return logits
 
+
 def switch(val1: torch.Tensor, val2: torch.Tensor, boolean: bool):
 
     boolean = boolean.type_as(val1)
     return (1 - boolean) * val1 + boolean * val2
 
+
 class text_generation_pipeline:
     def __init__(
-            self,
-            model: nn.Module,
-            args: MerakArguments,
-            tokenizer: PreTrainedTokenizerBase,
-        ):
+        self,
+        model: nn.Module,
+        args: MerakArguments,
+        tokenizer: PreTrainedTokenizerBase,
+        leaf_modules: Tuple[nn.Module] = (),
+    ):
 
         self.model = model
         self.model_config = model.config
         self.args = args
         self.tokenizer = tokenizer
+        self.leaf_modules = leaf_modules
         self.args.return_logits = True
+        self.communication_grid = args.get_communication_grid()
 
         self.input = None
         self.input_to_stage_dic = None
         if args.use_cpu:
-            self.device = 'cpu'
+            self.device = "cpu"
         else:
-            self.device = 'cuda'
+            self.device = "cuda"
 
         if hasattr(self.model, "config"):
             mergeargs(self.args, self.model.config)
@@ -100,6 +105,7 @@ class text_generation_pipeline:
             mergeargs(self.args, self.model)
         manual_set_args(self.args)
 
+        self.logger = get_logger("simple")
         self.loss_fn = self.get_loss_fn()
         self.create_pipeline_module()
 
@@ -108,9 +114,7 @@ class text_generation_pipeline:
             model=self.model,
             args=self.args,
             loss_fn=self.loss_fn,
-            topology=get_topo(),
-            communicaiton_grid=get_grid(),
-            activation_checkpoint_func=checkpoint_func,
+            leaf_modules=self.leaf_modules,
         )
 
         self.input_to_stage_dic = self.model.input_to_stage_dic
@@ -122,46 +126,48 @@ class text_generation_pipeline:
             optimizer=None,
             lr_scheduler=None,
             tuning_params=BaseParams(self.args),
-            loss_fn=self.loss_fn
+            loss_fn=self.loss_fn,
         )
 
         del self.model
 
     def get_loss_fn(self) -> Callable:
         criterion = nn.CrossEntropyLoss()
+
         def loss_fn(
-            outputs: Union[torch.Tensor, tuple],
-            labels: Union[torch.Tensor, tuple]
-            ) -> torch.Tensor:
+            outputs: Union[torch.Tensor, tuple], labels: Union[torch.Tensor, tuple]
+        ) -> torch.Tensor:
             if isinstance(outputs, tuple):
                 outputs = outputs[0]
             if isinstance(labels, tuple):
                 labels = labels[0]
-            loss = criterion(outputs.view(-1, outputs.size(-1)),
-                             labels.view(-1))
+            loss = criterion(outputs.view(-1, outputs.size(-1)), labels.view(-1))
             return loss
+
         return loss_fn
 
     def get_batch(self, context_tokens: torch.Tensor):
         if self.input is not None:
             context_tokens = self.input
-        tokens = context_tokens.view(
-            self.args.per_device_train_batch_size, -1
-        ).contiguous().to(self.device)
+        tokens = (
+            context_tokens.view(self.args.per_device_train_batch_size, -1)
+            .contiguous()
+            .to(self.device)
+        )
         # Get the attention mask.
         attention_mask = torch.ones((self.args.seq_length), device=tokens.device)
-        if self.args.trace_method in ['fx', 'dynamo']:
+        if self.args.trace_method in ["fx", "dynamo"]:
             return (tokens, attention_mask)
         else:
-            return {'input_ids':tokens, 'attention_mask':attention_mask}
+            return {"input_ids": tokens, "attention_mask": attention_mask}
 
     def sample_sequence_batch(
-            self,
-            context_tokens: torch.Tensor,
-            context_lengths: int,
-            maxlen: Optional[int] = None,
-            type_ids: Optional[int] = None
-        ):
+        self,
+        context_tokens: torch.Tensor,
+        context_lengths: int,
+        maxlen: Optional[int] = None,
+        type_ids: Optional[int] = None,
+    ):
 
         args = self.args
         tokenizer = self.tokenizer
@@ -177,7 +183,7 @@ class text_generation_pipeline:
 
             # added eos_id to support the function generate_samples_eval that passes
             # eos_id as an argument and needs termination when that id id found.
-            if hasattr(args, 'eos_id'):
+            if hasattr(args, "eos_id"):
                 eos_id = args.eos_id
             else:
                 eos_id = tokenizer.eod
@@ -185,7 +191,7 @@ class text_generation_pipeline:
             counter = 0
             org_context_length = context_length
 
-            layer_past = None
+            # layer_past = None
             batch_size = context_tokens.size(0)
             is_done = torch.zeros([batch_size]).byte().to(self.device)
             tokens = context_tokens
@@ -197,24 +203,25 @@ class text_generation_pipeline:
 
             lengths = torch.ones([batch_size]).long().to(self.device) * maxlen
             while context_length <= (maxlen):
-                loss, output, labels = self.infer_engine.eval_batch(
-                    batch_fn=self.get_batch,
-                    compute_loss=False
+                _, output, _ = self.infer_engine.eval_batch(
+                    batch_fn=self.get_batch, compute_loss=False
                 )
 
                 if output is not None and tp_size > 1 and self.args.parallel_vocab:
                     tensor_list = [
                         torch.zeros(
                             [
-                                1, args.seq_length,
-                                self.model_config.vocab_size // tp_size
+                                1,
+                                args.seq_length,
+                                self.model_config.vocab_size // tp_size,
                             ]
                         ).to(self.device)
                         for _ in range(tp_size)
                     ]
                     dist.all_gather(
-                        tensor_list, output[0][0][0],
-                        group=mpu.get_model_parallel_group()
+                        tensor_list,
+                        output[0][0][0],
+                        group=mpu.get_model_parallel_group(),
                     )
                     output = (torch.cat(tuple(tensor_list), dim=-1),)
 
@@ -222,21 +229,23 @@ class text_generation_pipeline:
                     assert output is not None
                     logits = output[0][:, context_length - 1, :]
 
-                # if mpu.is_pipeline_last_stage():
-                    if False: #args.greedy:
+                    # if mpu.is_pipeline_last_stage():
+                    if False:  # args.greedy:
                         prev = torch.argmax(logits, dim=-1).view(-1)
                     else:
                         logits = logits.float()
                         logits /= args.temperature
-                        logits = top_k_logits(logits, top_k=args.top_k,
-                                              top_p=args.top_p)
+                        logits = top_k_logits(
+                            logits, top_k=args.top_k, top_p=args.top_p
+                        )
                         log_probs = F.softmax(logits, dim=-1)
                         # 获取输入tensor中最大值的index，因为样本数为1
                         prev = torch.multinomial(log_probs, num_samples=1).view(-1)
                     started = context_lengths <= context_length
 
                     new_tokens = switch(
-                        tokens[:, context_length].view(-1), prev, started)
+                        tokens[:, context_length].view(-1), prev, started
+                    )
                     tokens[:, context_length] = new_tokens
                     src = dist.get_world_size() - 1
                     # group = mpu.get_pipe_parallel_group()
@@ -276,17 +285,18 @@ class text_generation_pipeline:
     def generate_samples_interactive(self, print_frequency: int = 24):
 
         self.init_engine()
-        self.infer_engine._configure_model_and_optimizer()
 
         # load merak checkpoint
-        if self.args.resume_from_checkpoint and os.path.isdir(self.args.resume_from_checkpoint):
+        if self.args.resume_from_checkpoint and os.path.isdir(
+            self.args.resume_from_checkpoint
+        ):
             self.args.no_load_optim = True
-            iteration, state_dict, opt_state_dict = checkpoint.load_checkpoint(
-                    self.infer_engine.module,
-                    optimizer=None,
-                    lr_scheduler=None,
-                    args=self.args,
-                    verbose=True
+            _, state_dict, opt_state_dict = CheckpointLoader().load_checkpoint(
+                self.infer_engine.module,
+                optimizer=None,
+                lr_scheduler=None,
+                args=self.args,
+                verbose=True,
             )
             del state_dict, opt_state_dict
         else:
@@ -294,7 +304,6 @@ class text_generation_pipeline:
                 f"{self.args.resume_from_checkpoint} has no checkpoints, "
                 f"please check the path or dirctory"
             )
-
 
         args = self.args
         tokenizer = self.tokenizer
@@ -304,12 +313,11 @@ class text_generation_pipeline:
             terminate_runs = 0
             raw_text_len = 0
 
-            if mpu.is_pipeline_first_stage() \
-            and mpu.get_model_parallel_rank() == 0:
-                os.system('clear')
+            if mpu.is_pipeline_first_stage() and mpu.get_model_parallel_rank() == 0:
+                os.system("clear")
                 raw_text = input("\nContext prompt (stop to exit) >>> ")
                 while not raw_text:
-                    print('Prompt should not be empty!')
+                    self.logger.info("Prompt should not be empty!")
                     raw_text = input("\nContext prompt (stop to exit) >>> ")
                 raw_text_len = len(raw_text)
 
@@ -322,9 +330,11 @@ class text_generation_pipeline:
                     context_length = len(context_tokens)
 
                     if context_length >= (args.seq_length // 2):
-                        print("\nContext length", context_length,
+                        self.logger.info(
+                            f"\nContext length {context_length}"
                             "\nPlease give smaller context (half of the "
-                            "sequence length)!", flush=True)
+                            "sequence length)!"
+                        )
                         continue
             else:
                 context_tokens = tokenizer.tokenize("EMPTY TEXT")
@@ -346,14 +356,18 @@ class text_generation_pipeline:
             # if mpu.get_model_parallel_rank() == 0 \
             if mpu.get_pipe_parallel_world_size() > 1:
                 if mpu.is_pipeline_first_stage() and mpu.get_model_parallel_rank() == 0:
-                    src = 0 #self.pipe_model.grid.stage_to_global(stage_id=0)
-                    context_tokens_tensor = torch.LongTensor(context_tokens).to(self.device)
+                    src = 0  # self.pipe_model.grid.stage_to_global(stage_id=0)
+                    context_tokens_tensor = torch.LongTensor(context_tokens).to(
+                        self.device
+                    )
                     torch.distributed.broadcast(context_tokens_tensor, src)
                 else:
-                    src = 0 #self.pipe_model.grid.stage_to_global(stage_id=0)
-                    context_tokens_tensor = torch.empty(context_length,
-                                                        dtype=torch.int64,
-                                                        device=torch.device(self.device))
+                    src = 0  # self.pipe_model.grid.stage_to_global(stage_id=0)
+                    context_tokens_tensor = torch.empty(
+                        context_length,
+                        dtype=torch.int64,
+                        device=torch.device(self.device),
+                    )
                     torch.distributed.broadcast(context_tokens_tensor, src)
                     if not self.args.use_cpu:
                         torch.cuda.synchronize()
@@ -362,13 +376,15 @@ class text_generation_pipeline:
             token_stream = self.get_token_stream([context_tokens])
 
             for counter, decode_tokens in enumerate(token_stream):
-                if counter % print_frequency != 0 \
-                or mpu.get_model_parallel_rank() != 0 \
-                or not mpu.is_pipeline_first_stage():
+                if (
+                    counter % print_frequency != 0
+                    or mpu.get_model_parallel_rank() != 0
+                    or not mpu.is_pipeline_first_stage()
+                ):
                     continue
 
-                os.system('clear')
-                print("\nContext:", raw_text, flush=True)
+                os.system("clear")
+                self.logger.info(f"\nContext: {raw_text}")
 
                 decode_tokens, _ = decode_tokens
                 decode_tokens = decode_tokens[0].cpu().numpy().tolist()
@@ -380,19 +396,17 @@ class text_generation_pipeline:
                     skip_special_tokens=True,
                     clean_up_tokenization_spaces=True,
                 )[raw_text_len:]
-                print("\nMegatron-LM:", trim_decode_tokens, flush=True)
+                self.logger.info(f"\nMerak: {trim_decode_tokens}")
 
-            if mpu.is_pipeline_first_stage() \
-            and mpu.get_model_parallel_rank() == 0:
-                os.system('clear')
-                print("\nContext:", raw_text, flush=True)
+            if mpu.is_pipeline_first_stage() and mpu.get_model_parallel_rank() == 0:
+                os.system("clear")
+                self.logger.info(f"\nContext: {raw_text}")
 
                 if not isinstance(decode_tokens, list):
                     decode_tokens, _ = decode_tokens
                     decode_tokens = decode_tokens[0].cpu().numpy().tolist()
-                trim_decode_tokens = tokenizer.decode(
-                    decode_tokens)[raw_text_len:]
-                print("\nMegatron-LM:", trim_decode_tokens, flush=True)
+                trim_decode_tokens = tokenizer.decode(decode_tokens)[raw_text_len:]
+                self.logger.info(f"\nMerak: {trim_decode_tokens}")
 
                 input("\nPress Enter to continue >>>")
 
@@ -403,27 +417,33 @@ class text_generation_pipeline:
         args = self.args
         tokenizer = self.tokenizer
 
-        context_tokens, context_lengths = self.pad_batch(context_tokens,
-                                                    tokenizer.eod, args)
+        context_tokens, context_lengths = self.pad_batch(
+            context_tokens, tokenizer.eod, args
+        )
 
         context_tokens_tensor = torch.LongTensor(context_tokens).to(self.device)
         context_length_tensor = torch.LongTensor(context_lengths).to(self.device)
 
-        torch.distributed.broadcast(context_length_tensor,
-                                    mpu.get_model_parallel_src_rank(),
-                                    group=mpu.get_model_parallel_group())
-        torch.distributed.broadcast(context_tokens_tensor,
-                                    mpu.get_model_parallel_src_rank(),
-                                    group=mpu.get_model_parallel_group())
+        torch.distributed.broadcast(
+            context_length_tensor,
+            mpu.get_model_parallel_src_rank(),
+            group=mpu.get_model_parallel_group(),
+        )
+        torch.distributed.broadcast(
+            context_tokens_tensor,
+            mpu.get_model_parallel_src_rank(),
+            group=mpu.get_model_parallel_group(),
+        )
 
         context_length = context_length_tensor.min().item()
 
         torch.distributed.broadcast(context_tokens_tensor, 0)
 
-        tokens, attention_mask = self.get_batch(context_tokens_tensor)
+        tokens, _ = self.get_batch(context_tokens_tensor)
 
-        batch_token_iterator = self.sample_sequence_batch(context_tokens_tensor,
-                                                    context_length_tensor)
+        batch_token_iterator = self.sample_sequence_batch(
+            context_tokens_tensor, context_length_tensor
+        )
         for tokens, lengths in batch_token_iterator:
             context_length += 1
             if tokens is not None:
@@ -432,11 +452,8 @@ class text_generation_pipeline:
                 yield None, None
 
     def pad_batch(
-            self,
-            batch: List[torch.Tensor],
-            pad_id: int,
-            args: MerakArguments
-        ) -> Tuple[torch.Tensor, List[int]]:
+        self, batch: List[torch.Tensor], pad_id: int, args: MerakArguments
+    ) -> Tuple[torch.Tensor, List[int]]:
 
         context_lengths = []
         for tokens in batch:

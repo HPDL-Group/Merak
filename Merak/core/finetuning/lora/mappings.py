@@ -15,7 +15,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# The code here are adapted from https://github.com/huggingface/peft/blob/main/src/peft/utils/other.py
+# The code here are adapted from
+# https://github.com/huggingface/peft/blob/main/src/peft/utils/other.py
 
 
 TRANSFORMERS_MODELS_TO_LORA_TARGET_MODULES_MAPPING = {
@@ -52,5 +53,3 @@ TRANSFORMERS_MODELS_TO_LORA_TARGET_MODULES_MAPPING = {
     "gemma": ["q_proj", "v_proj"],
     "qwen2": ["q_proj", "v_proj"],
 }
-
-

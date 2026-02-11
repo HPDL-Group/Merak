@@ -19,16 +19,18 @@
 # Parts of the code here are adapted from https://github.com/microsoft/DeepSpeed/blob/85acf14c58658964a796c5c901b58123f99fb1df/deepspeed/runtime/utils.py
 
 import math
-import torch
 from typing import Callable, Union
 
-from torch.nn import LayerNorm 
+import torch
+from torch.nn import LayerNorm
+
 # from transformers.utils.fx import _generate_supported_model_classes
 from transformers.utils.fx import _generate_supported_model_class_names
 
 
 def init_method_normal(sigma: float) -> Callable:
     """Init method based on N(0, sigma)."""
+
     def init_(tensor: torch.Tensor) -> torch.Tensor:
         return torch.nn.init.normal_(tensor, mean=0.0, std=sigma)
 
@@ -48,41 +50,47 @@ def scaled_init_method_normal(sigma: float, num_layers: Union[int, dict]):
 
 
 def tp_overlapping_available(model_class: Callable) -> bool:
-    SUPPORTED_MODEL_NAMES = ['gpt2']
+    SUPPORTED_MODEL_NAMES = ["gpt2"]
     for model_name in SUPPORTED_MODEL_NAMES:
-        if model_class.__name__ in \
-            _generate_supported_model_class_names(model_name):
+        if model_class.__name__ in _generate_supported_model_class_names(model_name):
             return True
     return False
+
 
 def get_params_for_weight_decay_optimization(module: torch.nn.Module):
     """
     Divide params into with-weight-decay and without-weight-decay groups.
     Layernorms and baises will have no weight decay but the rest will.
     """
-    weight_decay_params = {'params': []}
-    no_weight_decay_params = {'params': [], 'weight_decay': 0.0}
+    weight_decay_params = {"params": []}
+    no_weight_decay_params = {"params": [], "weight_decay": 0.0}
     for module_ in module.modules():
         if isinstance(module_, LayerNorm):
-            no_weight_decay_params['params'].extend(
-                [p for p in list(module_._parameters.values())
-                 if p is not None])
+            no_weight_decay_params["params"].extend(
+                [p for p in list(module_._parameters.values()) if p is not None]
+            )
         else:
-            weight_decay_params['params'].extend(
-                [p for n, p in list(module_._parameters.items())
-                 if p is not None and 'bias' not in n ])
-            no_weight_decay_params['params'].extend(
-                [p for n, p in list(module_._parameters.items())
-                 if p is not None and 'bias' in n ])
+            weight_decay_params["params"].extend(
+                [
+                    p
+                    for n, p in list(module_._parameters.items())
+                    if p is not None and "bias" not in n
+                ]
+            )
+            no_weight_decay_params["params"].extend(
+                [
+                    p
+                    for n, p in list(module_._parameters.items())
+                    if p is not None and "bias" in n
+                ]
+            )
 
     return weight_decay_params, no_weight_decay_params
 
+
 def reset_module_tensor(
-        module: torch.nn.Module,
-        tensor_name: str,
-        device: torch.device,
-        value: torch.Tensor
-    ):
+    module: torch.nn.Module, tensor_name: str, device: torch.device, value: torch.Tensor
+):
     if "." in tensor_name:
         splits = tensor_name.split(".")
         for split in splits[:-1]:
@@ -103,6 +111,7 @@ def reset_module_tensor(
         if is_buffer:
             module._buffers[tensor_name] = new_value
         else:
-            new_value = param_cls(new_value, requires_grad=old_value.requires_grad).to(device)
+            new_value = param_cls(new_value, requires_grad=old_value.requires_grad).to(
+                device
+            )
             module._parameters[tensor_name] = new_value
-

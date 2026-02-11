@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# State files
+*.json
+!package.json
+!package-lock.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# ProcGuard specific
+procguard_state.json
+*.pid
+
+# Test and coverage
+.coverage
+.pytest_cache/
+htmlcov/
+.coverage.*
+
+# Development tools
+*.egg-info/
+dist/

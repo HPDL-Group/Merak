@@ -13,17 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# The code here are adapted from https://github.com/huggingface/peft/blob/v0.6.0/src/peft/tuners/lora/layer.py
+# The code here are adapted from
+# https://github.com/huggingface/peft/blob/v0.6.0/src/peft/tuners/lora/layer.py
 
 import math
 import warnings
+from abc import ABC
 from typing import Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-from abc import ABC
 
 
 class BaseTunerLayer(ABC):
@@ -36,6 +36,7 @@ class BaseTunerLayer(ABC):
         active_adapters (Union[List[`str`], `str`], *optional*):
             The name of the active adapter.
     """
+
     active_adapter = None
 
     # List all names of layers that may contain adapter weights
@@ -113,8 +114,10 @@ class BaseTunerLayer(ABC):
 
         self._active_adapter = adapter_names
 
+
 def transpose(weight, fan_in_fan_out):
     return weight.T if fan_in_fan_out else weight
+
 
 class LoraLayer(BaseTunerLayer):
     # List all names of layers that may contain adapter weights
@@ -154,9 +157,13 @@ class LoraLayer(BaseTunerLayer):
         cls.__init__(self, *args, device="meta", **kwargs)
         self.to_empty(device=final_device)
 
-    def update_layer(self, adapter_name, r, lora_alpha, lora_dropout, init_lora_weights):
+    def update_layer(
+        self, adapter_name, r, lora_alpha, lora_dropout, init_lora_weights
+    ):
         if r <= 0:
-            raise ValueError(f"`r` should be a positive integer value but the value passed is {r}")
+            raise ValueError(
+                f"`r` should be a positive integer value but the value passed is {r}"
+            )
         self.r[adapter_name] = r
         self.lora_alpha[adapter_name] = lora_alpha
         if lora_dropout > 0.0:
@@ -182,9 +189,13 @@ class LoraLayer(BaseTunerLayer):
                 self.to(weight.device)
         self.set_adapter(self.active_adapters)
 
-    def update_layer_conv2d(self, adapter_name, r, lora_alpha, lora_dropout, init_lora_weights):
+    def update_layer_conv2d(
+        self, adapter_name, r, lora_alpha, lora_dropout, init_lora_weights
+    ):
         if r <= 0:
-            raise ValueError(f"`r` should be a positive integer value but the value passed is {r}")
+            raise ValueError(
+                f"`r` should be a positive integer value but the value passed is {r}"
+            )
         self.r[adapter_name] = r
         self.lora_alpha[adapter_name] = lora_alpha
         if lora_dropout > 0.0:
@@ -213,9 +224,13 @@ class LoraLayer(BaseTunerLayer):
             # the layer is already completely initialized, this is an update
             self.to(self.weight.device, dtype=weight.dtype)
 
-    def update_layer_embedding(self, adapter_name, r, lora_alpha, lora_dropout, init_lora_weights):
+    def update_layer_embedding(
+        self, adapter_name, r, lora_alpha, lora_dropout, init_lora_weights
+    ):
         if r <= 0:
-            raise ValueError(f"`r` should be a positive integer value but the value passed is {r}")
+            raise ValueError(
+                f"`r` should be a positive integer value but the value passed is {r}"
+            )
         self.r[adapter_name] = r
         self.lora_alpha[adapter_name] = lora_alpha
         if lora_dropout > 0.0:
@@ -271,8 +286,9 @@ class LoraLayer(BaseTunerLayer):
                 continue
 
             if scale is None:
-                self.scaling[active_adapter] = self.lora_alpha[active_adapter] / \
-                                                self.r[active_adapter]
+                self.scaling[active_adapter] = (
+                    self.lora_alpha[active_adapter] / self.r[active_adapter]
+                )
             else:
                 self.scaling[active_adapter] /= scale
 
@@ -386,7 +402,9 @@ class Linear(nn.Linear, LoraLayer):
             weight_A = weight_A.float()
             weight_B = weight_B.float()
 
-        output_tensor = transpose(weight_B @ weight_A, self.fan_in_fan_out) * self.scaling[adapter]
+        output_tensor = (
+            transpose(weight_B @ weight_A, self.fan_in_fan_out) * self.scaling[adapter]
+        )
 
         if cast_to_fp32:
             output_tensor = output_tensor.to(dtype=dtype)
@@ -398,7 +416,9 @@ class Linear(nn.Linear, LoraLayer):
         return output_tensor
 
     def _linear(self, input: torch.Tensor) -> torch.Tensor:
-        return F.linear(input, transpose(self.weight, self.fan_in_fan_out), bias=self.bias)
+        return F.linear(
+            input, transpose(self.weight, self.fan_in_fan_out), bias=self.bias
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         previous_dtype = x.dtype
@@ -440,7 +460,9 @@ class Embedding(nn.Embedding, LoraLayer):
         init_lora_weights = kwargs.pop("init_lora_weights", True)
         self._init_empty_weights(nn.Embedding, num_embeddings, embedding_dim, **kwargs)
         LoraLayer.__init__(self, in_features=num_embeddings, out_features=embedding_dim)
-        self.update_layer_embedding(adapter_name, r, lora_alpha, lora_dropout, init_lora_weights)
+        self.update_layer_embedding(
+            adapter_name, r, lora_alpha, lora_dropout, init_lora_weights
+        )
         self.set_adapter(adapter_name)
 
     def merge(self, safe_merge: bool = False) -> None:
@@ -520,7 +542,9 @@ class Embedding(nn.Embedding, LoraLayer):
 
         return output_tensor
 
-    def _embed(self, input: torch.Tensor, weight: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def _embed(
+        self, input: torch.Tensor, weight: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         weight = self.weight if weight is None else weight
         return F.embedding(
             input,
@@ -571,7 +595,12 @@ class Conv2d(nn.Conv2d, LoraLayer):
     ) -> None:
         init_lora_weights = kwargs.pop("init_lora_weights", True)
         self._init_empty_weights(
-            nn.Conv2d, in_channels, out_channels, kernel_size, stride=stride, padding=padding
+            nn.Conv2d,
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride=stride,
+            padding=padding,
         )
 
         LoraLayer.__init__(
@@ -583,7 +612,9 @@ class Conv2d(nn.Conv2d, LoraLayer):
             padding=padding,
         )
 
-        self.update_layer_conv2d(adapter_name, r, lora_alpha, lora_dropout, init_lora_weights)
+        self.update_layer_conv2d(
+            adapter_name, r, lora_alpha, lora_dropout, init_lora_weights
+        )
         self.set_adapter(adapter_name)
 
     def merge(self, safe_merge: bool = False) -> None:
@@ -656,7 +687,7 @@ class Conv2d(nn.Conv2d, LoraLayer):
             # conv2d 1x1
             output_tensor = (
                 weight_B.squeeze(3).squeeze(2) @ weight_A.squeeze(3).squeeze(2)
-                ).unsqueeze(2).unsqueeze(3) * self.scaling[adapter]
+            ).unsqueeze(2).unsqueeze(3) * self.scaling[adapter]
         else:
             # conv2d 3x3
             output_tensor = (

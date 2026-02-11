@@ -15,33 +15,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import Merak
-
-from Merak import MerakArguments, MerakTrainer, init_empty_weights
 from config import load_config
-from transformers import (
-    set_seed,
-    BertForMaskedLM,
-    BertForPreTraining,
-    BertConfig,
-    HfArgumentParser,
-)
+from transformers import BertConfig, BertForMaskedLM, BertForPreTraining, HfArgumentParser, set_seed
+
+import Merak
+from Merak import MerakArguments, MerakTrainer, init_empty_weights
 from Merak.utils.datasets import DynamicGenDataset
 
 
 def parse_option(parser):
     # easy config modification
-    parser.add_argument('--model_name', type=str, help='Name of the model to load (e.g. bert)')
+    parser.add_argument(
+        "--model_name", type=str, help="Name of the model to load (e.g. bert)"
+    )
     return parser
 
 
 def main():
     # init dist
-    pp = 2
-    tp = 2
-    dp = 1
+    pp = 1
+    tp = 1
+    dp = 4
     Merak.init(pp, tp, dp)
-    
+
     hfparser = HfArgumentParser(MerakArguments)
     parser = parse_option(hfparser)
     training_args, args = parser.parse_args_into_dataclasses()
@@ -53,28 +49,25 @@ def main():
     config_kwarg = load_config(args.model_name)
     config = BertConfig(**config_kwarg)
 
-
     with init_empty_weights():
-        if args.model_name == 'bert-large-uncased':
+        if args.model_name == "bert-large-uncased":
             model = BertForPreTraining(config)
-        elif args.model_name == 'bert-large' or args.model_name == 'bert-base-uncased':
+        elif args.model_name == "bert-large" or args.model_name == "bert-base-uncased":
             model = BertForMaskedLM(config)
 
     # Create a fake dataset for training
-    train_dataset = DynamicGenDataset(
-        model.config, mode="text_only", dataset_size=1e6
-    )
+    train_dataset = DynamicGenDataset(model.config, mode="text_only", dataset_size=1e6)
 
-
-    # using our distributed trainer        
+    # using our distributed trainer
     trainer = MerakTrainer(
         model=model,
         args=training_args,
-        train_dataset=train_dataset, 
+        train_dataset=train_dataset,
     )
 
     # Training
     trainer.train()
+
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,839 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ProcGuard 监控面板</title>
+    <link href="{{ url_for('static', filename='css/bootstrap.min.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/all.min.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar navbar-dark bg-dark mb-4">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="#">
+                <i class="fas fa-shield-alt me-2"></i>ProcGuard 监控面板
+            </a>
+            <div class="d-flex align-items-center">
+                <button class="btn btn-outline-warning btn-sm me-3" onclick="showHAModal()">
+                    <i class="fas fa-shield-virus me-1"></i>HA 高可用
+                </button>
+                <span class="navbar-text">
+                    <i class="fas fa-circle text-success me-2" id="connection-status"></i>
+                    <span id="connection-text">已连接</span>
+                </span>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-fluid px-4">
+        <div class="row">
+            <div class="col-lg-3 col-md-6 mb-4">
+                <div class="card stat-card h-100">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <h6 class="text-muted mb-2">总 Worker 数</h6>
+                                <h2 class="mb-0" id="total-workers">0</h2>
+                            </div>
+                            <div class="stat-icon bg-primary-subtle">
+                                <i class="fas fa-server text-primary"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="row">
+            <div class="col-lg-12">
+                <div class="card mb-4">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="fas fa-layer-group me-2"></i>Worker 分组</h5>
+                        <div>
+                            <button class="btn btn-sm btn-outline-secondary me-1" onclick="refreshWorkers()" title="刷新 Worker">
+                                <i class="fas fa-sync"></i>
+                            </button>
+                            <button class="btn btn-sm btn-primary" onclick="showCreateGroupModal()">
+                                <i class="fas fa-plus me-1"></i>新建分组
+                            </button>
+                            <button class="btn btn-sm btn-warning" onclick="clearGroupCache()" title="清除分组缓存">
+                                <i class="fas fa-trash me-1"></i>清除缓存
+                            </button>
+                            <button class="btn btn-sm btn-danger" onclick="resetAllWorkers()" title="重置所有Workers">
+                                <i class="fas fa-sync-alt me-1"></i>重置Workers
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="worker-groups-container" id="worker-groups">
+                            <div class="add-group-card" onclick="showCreateGroupModal()">
+                                <div class="add-group-content">
+                                    <div class="add-group-icon">
+                                        <i class="fas fa-plus-circle"></i>
+                                    </div>
+                                    <div class="add-group-text">新建分组</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="fas fa-list me-2"></i>Worker 列表</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-hover" id="workers-table">
+                                <thead>
+                                    <tr>
+                                        <th>Worker ID</th>
+                                        <th>状态</th>
+                                        <th>PID</th>
+                                        <th>重启次数</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="workers-tbody">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="createGroupModal" tabindex="-1" aria-labelledby="createGroupModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="createGroupModalLabel">
+                        <i class="fas fa-layer-group me-2"></i>新建分组
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">分组名称</label>
+                        <input type="text" class="form-control" id="group-name-input" placeholder="输入分组名称...">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">分组描述</label>
+                        <textarea class="form-control" id="group-description" rows="2" placeholder="可选输入描述..."></textarea>
+                    </div>
+                    <div class="alert alert-info mb-0">
+                        <i class="fas fa-info-circle me-2"></i>创建后可通过"移动到"功能将 Worker 添加到分组
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" onclick="closeCreateGroupModal()">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="createGroup()">
+                        <i class="fas fa-plus me-1"></i>创建
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="groupConfigModal" tabindex="-1" aria-labelledby="groupConfigModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="groupConfigModalLabel">
+                        <i class="fas fa-cogs me-2"></i>分组 PyTorch 配置
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="config-group-id">
+                    <div class="mb-3">
+                        <label class="form-label">分组名称</label>
+                        <input type="text" class="form-control" id="config-group-name" readonly>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Master 地址</label>
+                        <input type="text" class="form-control" id="config-master-addr" placeholder="例如: gn39-0">
+                        <div class="form-text">选择主节点Worker作为master</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">World Size (总进程数)</label>
+                        <input type="number" class="form-control" id="config-world-size" placeholder="自动计算" min="1">
+                        <div class="form-text">设为0或空表示使用分组内所有Worker</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Master 端口</label>
+                        <input type="number" class="form-control" id="config-master-port" value="29500">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">分布式后端</label>
+                        <select class="form-select" id="config-backend">
+                            <option value="nccl">NCCL (GPU推荐)</option>
+                            <option value="gloo">Gloo (CPU)</option>
+                            <option value="mpi">MPI</option>
+                        </select>
+                    </div>
+                    <div class="alert alert-info mb-0">
+                        <i class="fas fa-info-circle me-2"></i>配置保存后，选中Worker的心跳响应中将包含PyTorch分布式环境变量
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="saveGroupConfig(true)">
+                        <i class="fas fa-save me-1"></i>保存配置
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="moveGroupModal" tabindex="-1" aria-labelledby="moveGroupModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="moveGroupModalLabel">
+                        <i class="fas fa-users-slash me-2"></i>移动到分组
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-muted mb-3">选择要移动到的目标分组：</p>
+                    <div class="list-group" id="move-group-list">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" onclick="closeMoveGroupModal()">取消</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="logModal" tabindex="-1">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="fas fa-file-alt me-2"></i>Worker 日志
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="log-header" id="log-header"></div>
+                    <div class="log-modal-viewer" id="log-viewer">
+                        <div class="log-modal-placeholder">加载日志中...</div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" onclick="clearWorkerLogs()">
+                        <i class="fas fa-trash me-2"></i>清空
+                    </button>
+                    <button type="button" class="btn btn-primary" onclick="refreshWorkerLogs()">
+                        <i class="fas fa-sync me-2"></i>刷新
+                    </button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="workerEnvModal" tabindex="-1" aria-labelledby="workerEnvModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="workerEnvModalLabel">
+                        <i class="fas fa-envira me-2"></i><span id="worker-env-title">Worker 环境变量</span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="alert alert-info mb-3">
+                        <i class="fas fa-info-circle me-2"></i>
+                        显示当前 Worker 运行时的 PyTorch 分布式环境变量
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover" id="worker-env-table">
+                            <thead>
+                                <tr>
+                                    <th>变量名</th>
+                                    <th>值</th>
+                                </tr>
+                            </thead>
+                            <tbody id="worker-env-tbody">
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="mt-3">
+                        <button type="button" class="btn btn-outline-primary btn-sm" onclick="copyWorkerEnv()">
+                            <i class="fas fa-copy me-1"></i>复制环境变量
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary btn-sm" onclick="exportWorkerEnv()">
+                            <i class="fas fa-download me-1"></i>导出配置
+                        </button>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="log-panel" id="logPanel">
+        <div class="log-panel-header" onclick="toggleLogPanel()">
+            <div class="log-panel-title">
+                <i class="fas fa-list"></i>
+                <span>运行日志</span>
+                <span class="badge bg-secondary" id="log-count">0</span>
+            </div>
+            <div class="log-panel-controls">
+                <div class="log-panel-filter">
+                    <input type="text" id="log-filter" placeholder="筛选日志..." oninput="filterLogs()">
+                </div>
+                <button class="btn btn-sm btn-outline-light" onclick="clearAllLogs(); event.stopPropagation();">
+                    <i class="fas fa-trash"></i>
+                </button>
+                <button class="btn btn-sm btn-outline-light" onclick="toggleAutoScroll(); event.stopPropagation();">
+                    <i class="fas fa-arrow-down" id="scroll-icon"></i>
+                </button>
+            </div>
+        </div>
+        <div class="log-panel-content">
+            <div class="log-panel-tabs">
+                <div class="log-tab active" data-tab="all" onclick="switchLogTab('all')">
+                    全部 <span class="badge bg-secondary" id="log-count-all">0</span>
+                </div>
+            </div>
+            <div class="log-viewer" id="log-viewer-main">
+                <div class="log-placeholder">等待日志...</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/bootstrap.bundle.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/sortable.min.js') }}"></script>
+    
+    <style>
+        .ha-badge {
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+        .ha-badge-active {
+            background: #28a745;
+            color: white;
+        }
+        .ha-badge-standby {
+            background: #ffc107;
+            color: #212529;
+        }
+        .ha-group-associated {
+            border: 2px solid #667eea;
+            background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%);
+        }
+        .ha-status-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 12px;
+            padding: 3px 8px;
+            border-radius: 4px;
+            background: rgba(40, 167, 69, 0.1);
+            color: #28a745;
+        }
+        .ha-status-indicator.degraded {
+            background: rgba(255, 193, 7, 0.1);
+            color: #ffc107;
+        }
+        .ha-status-indicator.failover {
+            background: rgba(23, 162, 184, 0.1);
+            color: #17a2b8;
+        }
+    </style>
+    
+    <div class="modal fade" id="haModal" tabindex="-1" aria-labelledby="haModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header bg-warning text-dark">
+                    <h5 class="modal-title" id="haModalLabel">
+                        <i class="fas fa-link me-2"></i>HA 高可用关联配置
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="alert alert-info mb-3">
+                        <i class="fas fa-info-circle me-2"></i>
+                        配置运行组与备用组的关联，实现 Worker 故障自动转移
+                    </div>
+                    
+                    <ul class="nav nav-tabs mb-3" id="haTab" role="tablist">
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link active" id="create-tab" data-bs-toggle="tab" data-bs-target="#create-tab-pane" type="button">
+                                <i class="fas fa-plus me-1"></i>创建关联
+                            </button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="list-tab" data-bs-toggle="tab" data-bs-target="#list-tab-pane" type="button">
+                                <i class="fas fa-list me-1"></i>关联列表
+                            </button>
+                        </li>
+                    </ul>
+                    
+                    <div class="tab-content" id="haTabContent">
+                        <div class="tab-pane fade show active" id="create-tab-pane" role="tabpanel">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="card mb-3">
+                                        <div class="card-header bg-success-subtle">
+                                            <i class="fas fa-play-circle me-1"></i>运行组 (Active)
+                                        </div>
+                                        <div class="card-body">
+                                            <div class="mb-3">
+                                                <label class="form-label">选择运行组</label>
+                                                <select class="form-select" id="ha-active-group">
+                                                    <option value="">-- 选择分组 --</option>
+                                                </select>
+                                            </div>
+                                            <div class="mb-3">
+                                                <label class="form-label">World Size (总进程数)</label>
+                                                <input type="number" class="form-control" id="ha-world-size" value="4" min="1">
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="card mb-3">
+                                        <div class="card-header bg-warning-subtle">
+                                            <i class="fas fa-pause-circle me-1"></i>备用组 (Standby)
+                                        </div>
+                                        <div class="card-body">
+                                            <div class="mb-3">
+                                                <label class="form-label">选择备用组</label>
+                                                <select class="form-select" id="ha-standby-group">
+                                                    <option value="">-- 选择分组 --</option>
+                                                </select>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="card mb-3">
+                                <div class="card-header">
+                                    <i class="fas fa-cog me-1"></i>PyTorch 分布式配置
+                                </div>
+                                <div class="card-body">
+                                    <div class="row">
+                                        <div class="col-md-4 mb-3">
+                                            <label class="form-label">Master 地址</label>
+                                            <input type="text" class="form-control" id="ha-master-addr" placeholder="例如: gn39-0">
+                                        </div>
+                                        <div class="col-md-4 mb-3">
+                                            <label class="form-label">Master 端口</label>
+                                            <input type="number" class="form-control" id="ha-master-port" value="29500">
+                                        </div>
+                                        <div class="col-md-4 mb-3">
+                                            <label class="form-label">后端</label>
+                                            <select class="form-select" id="ha-backend">
+                                                <option value="nccl">NCCL (GPU)</option>
+                                                <option value="gloo">Gloo (CPU)</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="card mb-3">
+                                <div class="card-header">
+                                    <i class="fas fa-sliders-h me-1"></i>故障转移配置
+                                </div>
+                                <div class="card-body">
+                                    <div class="row">
+                                        <div class="col-md-4 mb-3">
+                                            <label class="form-label">故障转移阈值</label>
+                                            <input type="number" class="form-control" id="ha-failover-threshold" value="1" min="1">
+                                            <small class="text-muted">触发故障转移的失败 Worker 数量</small>
+                                        </div>
+                                        <div class="col-md-4 mb-3">
+                                            <label class="form-label">自动故障转移</label>
+                                            <div class="form-check mt-2">
+                                                <input class="form-check-input" type="checkbox" id="ha-auto-failover" checked>
+                                                <label class="form-check-label" for="ha-auto-failover">启用</label>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="tab-pane fade" id="list-tab-pane" role="tabpanel">
+                            <div id="ha-associations-list">
+                                <div class="text-center text-muted py-4">
+                                    <i class="fas fa-spinner fa-spin me-2"></i>加载中...
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="createHAAssociation()">
+                        <i class="fas fa-link me-1"></i>创建关联
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="modal fade" id="haStatusModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header bg-primary text-white">
+                    <h5 class="modal-title">
+                        <i class="fas fa-info-circle me-2"></i>HA 关联详情
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body" id="ha-status-content">
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-warning" onclick="triggerHAFailover()">
+                        <i class="fas fa-exchange-alt me-1"></i>手动故障转移
+                    </button>
+                    <button type="button" class="btn btn-danger" onclick="deleteHAAssociation()">
+                        <i class="fas fa-trash me-1"></i>删除关联
+                    </button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        let haAssociations = [];
+        let selectedAssociationId = null;
+        let haSocket = null;
+        
+        function initHA() {
+            connectHASocket();
+        }
+        
+        function connectHASocket() {
+            const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+            const host = window.location.host;
+            const socketUrl = `${protocol}//${host}`;
+
+            try {
+                if (typeof io !== 'undefined') {
+                    haSocket = io(socketUrl, {
+                        transports: ['polling'],
+                        reconnectionAttempts: 3,
+                        timeout: 5000
+                    });
+
+                    haSocket.on('connect', function() {
+                        console.log('[HA] Socket connected');
+                    });
+
+                    haSocket.on('ha_update', function(data) {
+                        console.log('[HA] Received update:', data);
+                        loadHAAssociations();
+                    });
+
+                    haSocket.on('connect_error', function(error) {
+                        console.log('[HA] Socket connection error:', error);
+                    });
+
+                    haSocket.on('error', function(error) {
+                        console.log('[HA] Socket error:', error);
+                    });
+                }
+            } catch (e) {
+                console.log('[HA] Socket not available:', e);
+            }
+        }
+        
+        async function loadHAAssociations() {
+            try {
+                const response = await fetch('/api/ha/associations');
+                const data = await response.json();
+                
+                if (data.success && data.associations) {
+                    haAssociations = data.associations;
+                    renderHAAssociations();
+                    updateGroupHAStatus();
+                }
+            } catch (e) {
+                console.error('[HA] Failed to load associations:', e);
+            }
+        }
+        
+        async function loadGroupsForHA() {
+            try {
+                const response = await fetch('/api/groups');
+                const data = await response.json();
+                
+                if (data.success && data.groups) {
+                    const activeSelect = document.getElementById('ha-active-group');
+                    const standbySelect = document.getElementById('ha-standby-group');
+                    
+                    if (activeSelect) {
+                        activeSelect.innerHTML = '<option value="">-- 选择分组 --</option>';
+                        standbySelect.innerHTML = '<option value="">-- 选择分组 --</option>';
+                        
+                        data.groups.forEach(group => {
+                            activeSelect.innerHTML += `<option value="${group.group_id}">${group.name}</option>`;
+                            standbySelect.innerHTML += `<option value="${group.group_id}">${group.name}</option>`;
+                        });
+                    }
+                }
+            } catch (e) {
+                console.error('[HA] Failed to load groups:', e);
+            }
+        }
+        
+        function showHAModal() {
+            loadGroupsForHA();
+            loadHAAssociations();
+            const modal = new bootstrap.Modal(document.getElementById('haModal'));
+            modal.show();
+        }
+        
+        function renderHAAssociations() {
+            const container = document.getElementById('ha-associations-list');
+            if (!container) return;
+            
+            if (haAssociations.length === 0) {
+                container.innerHTML = `
+                    <div class="text-center text-muted py-4">
+                        <i class="fas fa-project-diagram fa-3x mb-3"></i>
+                        <p>暂无 HA 关联组</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            let html = '';
+            haAssociations.forEach(assoc => {
+                const statusClass = assoc.state === 'active' ? 'success' : 
+                                   assoc.state === 'degraded' ? 'warning' : 'info';
+                const statusText = assoc.state === 'active' ? '正常' : 
+                                  assoc.state === 'degraded' ? '降级' : assoc.state;
+                
+                html += `
+                    <div class="card mb-3">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <div>
+                                <span class="badge bg-${statusClass}">${statusText}</span>
+                                <span class="ms-2">运行: ${assoc.active_workers}/${assoc.world_size}</span>
+                                <span class="ms-2 text-muted">备用: ${assoc.standby_available} 可用</span>
+                            </div>
+                            <div>
+                                <button class="btn btn-sm btn-outline-primary" onclick="showHAStatus('${assoc.association_id}')">
+                                    <i class="fas fa-eye me-1"></i>详情
+                                </button>
+                                <button class="btn btn-sm btn-outline-danger" onclick="deleteHAAssociation('${assoc.association_id}')">
+                                    <i class="fas fa-trash me-1"></i>删除
+                                </button>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="d-flex align-items-center">
+                                        <i class="fas fa-play-circle text-success me-2"></i>
+                                        <div>
+                                            <strong>运行组:</strong> ${assoc.active_group_id}
+                                            ${assoc.auto_failover ? '<span class="badge bg-success ms-1">自动</span>' : ''}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="d-flex align-items-center">
+                                        <i class="fas fa-pause-circle text-warning me-2"></i>
+                                        <div>
+                                            <strong>备用组:</strong> ${assoc.standby_group_id}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            container.innerHTML = html;
+        }
+        
+        function updateGroupHAStatus() {
+            haAssociations.forEach(assoc => {
+                const activeCard = document.querySelector(`[data-group-id="${assoc.active_group_id}"]`);
+                const standbyCard = document.querySelector(`[data-group-id="${assoc.standby_group_id}"]`);
+                
+                if (activeCard) {
+                    const statusDiv = activeCard.querySelector('.ha-status-indicator') || 
+                                     activeCard.querySelector('.card-body');
+                    if (statusDiv && !activeCard.querySelector('.ha-status-indicator')) {
+                        const statusHtml = `<span class="ha-status-indicator ${assoc.state !== 'active' ? 'degraded' : ''}">
+                            <i class="fas fa-shield-alt"></i> HA 运行组 ${assoc.active_workers}/${assoc.world_size}
+                        </span>`;
+                        statusDiv.insertAdjacentHTML('afterbegin', statusHtml);
+                    }
+                }
+            });
+        }
+        
+        async function createHAAssociation() {
+            const activeGroup = document.getElementById('ha-active-group').value;
+            const standbyGroup = document.getElementById('ha-standby-group').value;
+            const worldSize = parseInt(document.getElementById('ha-world-size').value) || 4;
+            const masterAddr = document.getElementById('ha-master-addr').value || null;
+            const masterPort = parseInt(document.getElementById('ha-master-port').value) || 29500;
+            const backend = document.getElementById('ha-backend').value;
+            const failoverThreshold = parseInt(document.getElementById('ha-failover-threshold').value) || 1;
+            const autoFailover = document.getElementById('ha-auto-failover').checked;
+            
+            if (!activeGroup || !standbyGroup) {
+                alert('请选择运行组和备用组');
+                return;
+            }
+            
+            if (activeGroup === standbyGroup) {
+                alert('运行组和备用组不能相同');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/ha/associations', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        active_group_id: activeGroup,
+                        standby_group_id: standbyGroup,
+                        world_size: worldSize,
+                        master_addr: masterAddr,
+                        master_port: masterPort,
+                        backend: backend,
+                        failover_threshold: failoverThreshold,
+                        auto_failover: autoFailover
+                    })
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    const associationId = data.association_id;
+                    bootstrap.Modal.getInstance(document.getElementById('haModal')).hide();
+
+                    await fetch(`/api/ha/associations/${associationId}/monitor/start`, { method: 'POST' });
+
+                    loadHAAssociations();
+                    loadGroupsForHA();
+                    alert('HA 关联创建成功，监控已自动启动！');
+                } else {
+                    alert('创建失败: ' + (data.error || '未知错误'));
+                }
+            } catch (e) {
+                alert('创建失败: ' + e.message);
+            }
+        }
+        
+        function showHAStatus(associationId) {
+            selectedAssociationId = associationId;
+            const assoc = haAssociations.find(a => a.association_id === associationId);
+            if (!assoc) return;
+            
+            const content = document.getElementById('ha-status-content');
+            const stateText = assoc.state === 'active' ? '正常' : 
+                             assoc.state === 'degraded' ? '降级' : assoc.state;
+            
+            content.innerHTML = `
+                <div class="row mb-3">
+                    <div class="col-md-3 text-center">
+                        <div class="card bg-success-subtle">
+                            <div class="card-body">
+                                <h3>${assoc.active_workers}/${assoc.world_size}</h3>
+                                <small>运行组 Worker</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3 text-center">
+                        <div class="card bg-warning-subtle">
+                            <div class="card-body">
+                                <h3>${assoc.standby_available}</h3>
+                                <small>备用组可用</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3 text-center">
+                        <div class="card">
+                            <div class="card-body">
+                                <h3>${stateText}</h3>
+                                <small>关联状态</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3 text-center">
+                        <div class="card">
+                            <div class="card-body">
+                                <h3>${assoc.failover_count || 0}</h3>
+                                <small>故障转移次数</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="alert ${assoc.auto_failover ? 'alert-success' : 'alert-secondary'}">
+                    <i class="fas fa-cog me-2"></i>
+                    自动故障转移: ${assoc.auto_failover ? '启用' : '禁用'}
+                </div>
+            `;
+            
+            const modal = new bootstrap.Modal(document.getElementById('haStatusModal'));
+            modal.show();
+        }
+        
+        function triggerHAFailover() {
+            if (!selectedAssociationId) return;
+            if (!confirm('确定要手动触发故障转移吗？')) return;
+            
+            fetch(`/api/ha/associations/${selectedAssociationId}/failover`, { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('故障转移已触发');
+                        bootstrap.Modal.getInstance(document.getElementById('haStatusModal')).hide();
+                        loadHAAssociations();
+                    } else {
+                        alert('触发失败: ' + (data.error || '未知错误'));
+                    }
+                });
+        }
+        
+        function deleteHAAssociation(associationId) {
+            const id = associationId || selectedAssociationId;
+            if (!id) return;
+            if (!confirm('确定要删除此 HA 关联吗？')) return;
+            
+            fetch(`/api/ha/associations/${id}`, { method: 'DELETE' })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('删除成功');
+                        loadHAAssociations();
+                        loadGroupsForHA();
+                        bootstrap.Modal.getInstance(document.getElementById('haStatusModal')).hide();
+                    } else {
+                        alert('删除失败: ' + (data.error || '未知错误'));
+                    }
+                });
+        }
+        
+        document.addEventListener('DOMContentLoaded', function() {
+            initHA();
+        });
+    </script>
+</body>
+</html>

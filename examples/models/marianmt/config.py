@@ -6,15 +6,9 @@ def load_config(model_name):
             "activation_function": "swish",
             "add_bias_logits": False,
             "add_final_layer_norm": False,
-            "architectures": [
-                "MarianMTModel"
-            ],
+            "architectures": ["MarianMTModel"],
             "attention_dropout": 0.0,
-            "bad_words_ids": [
-                [
-                65000
-                ]
-            ],
+            "bad_words_ids": [[65000]],
             "bos_token_id": 0,
             "classif_dropout": 0.0,
             "classifier_dropout": 0.0,
@@ -33,18 +27,10 @@ def load_config(model_name):
             "eos_token_id": 0,
             "extra_pos_embeddings": 65001,
             "forced_eos_token_id": 0,
-            "id2label": {
-                "0": "LABEL_0",
-                "1": "LABEL_1",
-                "2": "LABEL_2"
-            },
+            "id2label": {"0": "LABEL_0", "1": "LABEL_1", "2": "LABEL_2"},
             "init_std": 0.02,
             "is_encoder_decoder": True,
-            "label2id": {
-                "LABEL_0": 0,
-                "LABEL_1": 1,
-                "LABEL_2": 2
-            },
+            "label2id": {"LABEL_0": 0, "LABEL_1": 1, "LABEL_2": 2},
             "max_length": 512,
             "max_position_embeddings": 512,
             "model_type": "marian",
@@ -58,9 +44,9 @@ def load_config(model_name):
             "static_position_embeddings": True,
             "transformers_version": "4.22.0.dev0",
             "use_cache": False,
-            'return_dict': False,
-            "vocab_size": 65001
-            }
+            "return_dict": False,
+            "vocab_size": 65001,
+        }
     else:
         raise ValueError(f"No {model_name} config")
     return config

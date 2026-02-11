@@ -38,13 +38,12 @@
 import argparse
 import os
 import re
-import zipfile
 import sys
+import zipfile
 
 import torch
-
-from transformers import AutoTokenizer, GPT2Config
 import torch.distributed as dist
+from transformers import AutoTokenizer, GPT2Config
 
 ####################################################################################################
 
@@ -53,7 +52,9 @@ USE_MEGATRON = False
 
 try:
     import Merak
-    from Merak import mpu, print_rank_0
+    from Merak import print_rank_0
+    from Merak.core import mpu
+
     USE_MERAK = True
 except:
     pass
@@ -61,16 +62,18 @@ except:
 try:
     import megatron
     from megatron import mpu, print_rank_0
+
     USE_MEGATRON = True
 except:
     pass
 
-if not USE_MEGATRON and not USE_MERAK: 
+if not USE_MEGATRON and not USE_MERAK:
     raise ImportError("Megatron or Merak not found, please install Megatron or Merak")
 
-if  USE_MEGATRON and  USE_MERAK: 
-    USE_MERAK = True 
+if USE_MEGATRON and USE_MERAK:
+    USE_MERAK = True
     USE_MEGATRON = False
+
 
 def init_model_parallel():
     if USE_MERAK:
@@ -92,10 +95,21 @@ def init_model_parallel():
         next_rank = mpu.get_pipeline_model_parallel_next_rank()
         global_rank_of_stage_0 = mpu.get_pipeline_model_parallel_first_rank()
     else:
-        raise ValueError("Megatron or Merak not found, please install Megatron or Merak")
+        raise ValueError(
+            "Megatron or Merak not found, please install Megatron or Merak"
+        )
 
-        
-    return (pipe_rank,  pipe_size,  pipe_group,  model_rank,  model_size,  prev_rank,  next_rank, global_rank_of_stage_0)
+    return (
+        pipe_rank,
+        pipe_size,
+        pipe_group,
+        model_rank,
+        model_size,
+        prev_rank,
+        next_rank,
+        global_rank_of_stage_0,
+    )
+
 
 ####################################################################################################
 
@@ -103,7 +117,16 @@ def init_model_parallel():
 def recursive_print(name, val, path_to_output_checkpoint, parallel_args, spaces=0):
     # Format the message.
     # For printing model structure
-    pipe_rank, pipe_size, pipe_group, model_rank, model_size, prev_rank, next_rank, global_rank_of_stage_0 = parallel_args
+    (
+        pipe_rank,
+        pipe_size,
+        pipe_group,
+        model_rank,
+        model_size,
+        prev_rank,
+        next_rank,
+        global_rank_of_stage_0,
+    ) = parallel_args
 
     if name is None:
         msg = None
@@ -117,18 +140,26 @@ def recursive_print(name, val, path_to_output_checkpoint, parallel_args, spaces=
         if msg is not None:
             print(msg)
         for k in val.keys():
-            recursive_print(k, val[k], path_to_output_checkpoint, parallel_args, spaces + 2)
+            recursive_print(
+                k, val[k], path_to_output_checkpoint, parallel_args, spaces + 2
+            )
     elif isinstance(val, torch.Tensor):
-        with open(f"{path_to_output_checkpoint}/pp{pipe_rank}_tp{model_rank}.txt", "w") as f:
+        with open(
+            f"{path_to_output_checkpoint}/pp{pipe_rank}_tp{model_rank}.txt", "w"
+        ) as f:
             f.write(f"{msg},{val.size()} \n")
         # print(msg, ":", val.size())
     else:
-        with open(f"{path_to_output_checkpoint}/pp{pipe_rank}_tp{model_rank}.txt", "w") as f:
+        with open(
+            f"{path_to_output_checkpoint}/pp{pipe_rank}_tp{model_rank}.txt", "w"
+        ) as f:
             f.write(f"{msg},{val} \n ")
         # print(msg, ":", val)
 
 
-def fix_query_key_value_ordering(param, checkpoint_version, num_splits, num_heads, hidden_size):
+def fix_query_key_value_ordering(
+    param, checkpoint_version, num_splits, num_heads, hidden_size
+):
     # Permutes layout of param tensor to [num_splits * num_heads * hidden_size, :]
     # for compatibility with later versions of NVIDIA Megatron-LM.
     # The inverse operation is performed inside Megatron-LM to read checkpoints:
@@ -150,7 +181,9 @@ def fix_query_key_value_ordering(param, checkpoint_version, num_splits, num_head
     param = param.view(*input_shape)
     return param
 
+
 ####################################################################################################
+
 
 def init_p2p():
     next_rank = None
@@ -166,31 +199,40 @@ def init_p2p():
     mpu.initialize.set_pipeline_model_parallel_next_rank(next_rank)
     mpu.initialize.set_pipeline_model_parallel_prev_rank(prev_rank)
 
+
 ####################################################################################################
+
 
 def cal_layers_num(lm, layer_re):
     fl_layers = 1
-    if 'embedding' in lm.keys():
-        embed_layers = len(lm['embedding'].keys())
+    if "embedding" in lm.keys():
+        embed_layers = len(lm["embedding"].keys())
     else:
         embed_layers = 0
-    if "final_layernorm.weight" in lm['encoder'].keys():
-        include_fl_layers = int(layer_re.match(list(lm['encoder'].keys())[-3]).group(1)) + 1
+    if "final_layernorm.weight" in lm["encoder"].keys():
+        include_fl_layers = (
+            int(layer_re.match(list(lm["encoder"].keys())[-3]).group(1)) + 1
+        )
         if len(lm.keys()) == 1:
             layers_num = include_fl_layers + fl_layers
         elif len(lm.keys()) == 2:
             layers_num = include_fl_layers + fl_layers + embed_layers
         else:
-            raise KeyError(f"The language_model has error numbers of {len(lm.keys())} keys")
+            raise KeyError(
+                f"The language_model has error numbers of {len(lm.keys())} keys"
+            )
     else:
-        normal_layers = int(layer_re.match(list(lm['encoder'].keys())[-1]).group(1)) + 1
+        normal_layers = int(layer_re.match(list(lm["encoder"].keys())[-1]).group(1)) + 1
         if len(lm.keys()) == 1:
             layers_num = normal_layers
         elif len(lm.keys()) == 2:
             layers_num = normal_layers + embed_layers
         else:
-            raise KeyError(f"The language_model has error numbers of {len(lm.keys())} keys")
+            raise KeyError(
+                f"The language_model has error numbers of {len(lm.keys())} keys"
+            )
     return layers_num
+
 
 ####################################################################################################
 
@@ -202,7 +244,16 @@ def convert_megatron_checkpoint(args, input_state_dict, config, parallel_args):
     else:
         device = "cpu"
 
-    pipe_rank, pipe_size, pipe_group, model_rank, model_size, prev_rank, next_rank, global_rank_of_stage_0 = parallel_args
+    (
+        pipe_rank,
+        pipe_size,
+        pipe_group,
+        model_rank,
+        model_size,
+        prev_rank,
+        next_rank,
+        global_rank_of_stage_0,
+    ) = parallel_args
 
     # The converted output model.
     output_state_dict = {}
@@ -246,29 +297,37 @@ def convert_megatron_checkpoint(args, input_state_dict, config, parallel_args):
     else:
         dist.recv(layers_num_tensor, prev_rank, group=pipe_group)
         layers_num = int(layers_num_tensor.item())
-        print(f"current stage {pipe_rank}, rank {dist.get_rank()}, recv from {prev_rank}, num layers {layers_num}")
-        first_layer_idx = layers_num - 2 # exclude embedding layers
-    
+        print(
+            f"current stage {pipe_rank}, rank {dist.get_rank()}, recv from {prev_rank}, num layers {layers_num}"
+        )
+        first_layer_idx = layers_num - 2  # exclude embedding layers
+
     layer_re = re.compile("layers\.(\d+)\.([a-z0-9_.]+)\.([a-z]+)")
-    if 1 <= len(model.keys()) <= 2 :
+    if 1 <= len(model.keys()) <= 2:
         layers_num = cal_layers_num(lm, layer_re)
     # elif len(model.keys()) == 2:
     #     layers_num = cal_layers_num(lm, layer_re)
-        # layers_num += 1
+    # layers_num += 1
     else:
         raise ValueError("The model not megatron standard checkpoint")
 
     if pipe_rank != pipe_size - 1:
-        print(f"current stage {pipe_rank}, rank {dist.get_rank()}, send to {next_rank}, tensor {layers_num_tensor}")
+        print(
+            f"current stage {pipe_rank}, rank {dist.get_rank()}, send to {next_rank}, tensor {layers_num_tensor}"
+        )
         dist.send(layers_num_tensor + layers_num, next_rank, group=pipe_group)
     total_layers_num = layers_num_tensor.item() + layers_num
 
     # get numbers of layer list
-    layers_num_tensor_var = layers_num_tensor_var+total_layers_num
-    layers_num_tensor_var_list = [torch.zeros_like(layers_num_tensor_var) for _ in range(pipe_size)]
+    layers_num_tensor_var = layers_num_tensor_var + total_layers_num
+    layers_num_tensor_var_list = [
+        torch.zeros_like(layers_num_tensor_var) for _ in range(pipe_size)
+    ]
     layers_num_tensor_var_list[pipe_rank] = layers_num_tensor_var
-    torch.distributed.all_gather(layers_num_tensor_var_list, layers_num_tensor_var, group=pipe_group)
-    
+    torch.distributed.all_gather(
+        layers_num_tensor_var_list, layers_num_tensor_var, group=pipe_group
+    )
+
     dist.barrier()
 
     # set Merak module number
@@ -297,7 +356,9 @@ def convert_megatron_checkpoint(args, input_state_dict, config, parallel_args):
         word_embeddings = embeddings["word_embeddings"]["weight"]
         # Truncate the embedding table to vocab_size rows.
         word_embeddings = word_embeddings[: config.vocab_size, :]
-        output_state_dict[f"module.{module_num}.transformer.wte.weight"] = word_embeddings
+        output_state_dict[f"module.{module_num}.transformer.wte.weight"] = (
+            word_embeddings
+        )
         module_num += 1
 
         # _tensor_constant0
@@ -315,10 +376,12 @@ def convert_megatron_checkpoint(args, input_state_dict, config, parallel_args):
 
         # Copies n_positions from src to all other processes.
         if pipe_size > 1:
-            dist.broadcast(n_positions_tensor+n_positions, src=global_rank_of_stage_0)
+            dist.broadcast(n_positions_tensor + n_positions, src=global_rank_of_stage_0)
 
         # Store the position embeddings.
-        output_state_dict[f"module.{module_num}.transformer.wpe.weight"] = pos_embeddings
+        output_state_dict[f"module.{module_num}.transformer.wpe.weight"] = (
+            pos_embeddings
+        )
         module_num += 1
     else:
         dist.broadcast(n_positions_tensor, src=global_rank_of_stage_0)
@@ -369,88 +432,155 @@ def convert_megatron_checkpoint(args, input_state_dict, config, parallel_args):
             # For layernorm(s), simply store the layer norm.
             if op_name.endswith("layernorm"):
                 ln_name = "ln_1" if op_name.startswith("input") else "ln_2"
-                output_state_dict[f"module.{module_num}" + "." +layer_name + "." + ln_name + "." + weight_or_bias] = val
+                output_state_dict[
+                    f"module.{module_num}"
+                    + "."
+                    + layer_name
+                    + "."
+                    + ln_name
+                    + "."
+                    + weight_or_bias
+                ] = val
 
             # Transpose the QKV matrix.
             elif (
-                op_name == "attention.query_key_value" or op_name == "self_attention.query_key_value"
+                op_name == "attention.query_key_value"
+                or op_name == "self_attention.query_key_value"
             ) and weight_or_bias == "weight":
                 # Insert a tensor of 1x1xDxD bias.
-                causal_mask = torch.tril(torch.ones((n_positions, n_positions), dtype=torch.float32)).view(
-                    1, 1, n_positions, n_positions
-                )
-                output_state_dict[f"module.{module_num}" + "." + layer_name + ".attn.bias"] = causal_mask
+                causal_mask = torch.tril(
+                    torch.ones((n_positions, n_positions), dtype=torch.float32)
+                ).view(1, 1, n_positions, n_positions)
+                output_state_dict[
+                    f"module.{module_num}" + "." + layer_name + ".attn.bias"
+                ] = causal_mask
 
                 # Insert a "dummy" tensor for masked_bias.
                 masked_bias = torch.tensor(-1e4, dtype=torch.float32)
-                output_state_dict[f"module.{module_num}" + "." + layer_name + ".attn.masked_bias"] = masked_bias
+                output_state_dict[
+                    f"module.{module_num}" + "." + layer_name + ".attn.masked_bias"
+                ] = masked_bias
 
-                out_val = fix_query_key_value_ordering(val, checkpoint_version, 3, heads, hidden_size_per_head)
+                out_val = fix_query_key_value_ordering(
+                    val, checkpoint_version, 3, heads, hidden_size_per_head
+                )
                 # Megatron stores (3*D) x D but transformers-GPT2 expects D x 3*D.
-                out_val = out_val #.transpose(0, 1).contiguous()
+                out_val = out_val  # .transpose(0, 1).contiguous()
                 # Store.
-                output_state_dict[f"module.{module_num}" + "." + layer_name + ".attn.c_attn.col_linear.weight"] = out_val
+                output_state_dict[
+                    f"module.{module_num}"
+                    + "."
+                    + layer_name
+                    + ".attn.c_attn.col_linear.weight"
+                ] = out_val
 
             # Transpose the bias.
             elif (
-                op_name == "attention.query_key_value" or op_name == "self_attention.query_key_value"
+                op_name == "attention.query_key_value"
+                or op_name == "self_attention.query_key_value"
             ) and weight_or_bias == "bias":
-                out_val = fix_query_key_value_ordering(val, checkpoint_version, 3, heads, hidden_size_per_head)
+                out_val = fix_query_key_value_ordering(
+                    val, checkpoint_version, 3, heads, hidden_size_per_head
+                )
                 # Store. No change of shape.
-                output_state_dict[f"module.{module_num}" + "." + layer_name + ".attn.c_attn.col_linear.bias"] = out_val
+                output_state_dict[
+                    f"module.{module_num}"
+                    + "."
+                    + layer_name
+                    + ".attn.c_attn.col_linear.bias"
+                ] = out_val
 
             # Transpose the weights.
             elif weight_or_bias == "weight":
                 out_name = megatron_to_merak[op_name]
-                output_state_dict[f"module.{module_num}" + "." + layer_name + out_name + "weight"] = val #.transpose(0, 1)
+                output_state_dict[
+                    f"module.{module_num}" + "." + layer_name + out_name + "weight"
+                ] = val  # .transpose(0, 1)
 
             # Copy the bias.
             elif weight_or_bias == "bias":
                 out_name = megatron_to_merak[op_name]
-                output_state_dict[f"module.{module_num}" + "." + layer_name + out_name + "bias"] = val
+                output_state_dict[
+                    f"module.{module_num}" + "." + layer_name + out_name + "bias"
+                ] = val
         elif args.overlap_level == 3:
             # For layernorm(s), simply store the layer norm.
             if op_name.endswith("layernorm"):
                 ln_name = op_name
-                output_state_dict[f"module.{module_num}" + "." +layer_name + "." + ln_name + "." + weight_or_bias] = val
+                output_state_dict[
+                    f"module.{module_num}"
+                    + "."
+                    + layer_name
+                    + "."
+                    + ln_name
+                    + "."
+                    + weight_or_bias
+                ] = val
 
             # Transpose the QKV matrix.
             elif (
-                op_name == "attention.query_key_value" or op_name == "self_attention.query_key_value"
+                op_name == "attention.query_key_value"
+                or op_name == "self_attention.query_key_value"
             ) and weight_or_bias == "weight":
                 # Insert a tensor of 1x1xDxD bias.
-                causal_mask = torch.tril(torch.ones((n_positions, n_positions), dtype=torch.float32)).view(
-                    1, 1, n_positions, n_positions
-                )
-                output_state_dict[f"module.{module_num}" + "." + layer_name + ".self_attention.bias"] = causal_mask
+                causal_mask = torch.tril(
+                    torch.ones((n_positions, n_positions), dtype=torch.float32)
+                ).view(1, 1, n_positions, n_positions)
+                output_state_dict[
+                    f"module.{module_num}" + "." + layer_name + ".self_attention.bias"
+                ] = causal_mask
 
                 # Insert a "dummy" tensor for masked_bias.
                 masked_bias = torch.tensor(-1e4, dtype=torch.float32)
-                output_state_dict[f"module.{module_num}" + "." + layer_name + ".self_attention.masked_bias"] = masked_bias
+                output_state_dict[
+                    f"module.{module_num}"
+                    + "."
+                    + layer_name
+                    + ".self_attention.masked_bias"
+                ] = masked_bias
 
-                out_val = fix_query_key_value_ordering(val, checkpoint_version, 3, heads, hidden_size_per_head)
+                out_val = fix_query_key_value_ordering(
+                    val, checkpoint_version, 3, heads, hidden_size_per_head
+                )
                 # Megatron stores (3*D) x D but transformers-GPT2 expects D x 3*D.
-                out_val = out_val #.transpose(0, 1).contiguous()
+                out_val = out_val  # .transpose(0, 1).contiguous()
                 # Store.
-                output_state_dict[f"module.{module_num}" + "." + layer_name + ".self_attention.c_attn.col_linear.weight"] = out_val
+                output_state_dict[
+                    f"module.{module_num}"
+                    + "."
+                    + layer_name
+                    + ".self_attention.c_attn.col_linear.weight"
+                ] = out_val
 
             # Transpose the bias.
             elif (
-                op_name == "attention.query_key_value" or op_name == "self_attention.query_key_value"
+                op_name == "attention.query_key_value"
+                or op_name == "self_attention.query_key_value"
             ) and weight_or_bias == "bias":
-                out_val = fix_query_key_value_ordering(val, checkpoint_version, 3, heads, hidden_size_per_head)
+                out_val = fix_query_key_value_ordering(
+                    val, checkpoint_version, 3, heads, hidden_size_per_head
+                )
                 # Store. No change of shape.
-                output_state_dict[f"module.{module_num}" + "." + layer_name + ".self_attention.c_attn.col_linear.bias"] = out_val
+                output_state_dict[
+                    f"module.{module_num}"
+                    + "."
+                    + layer_name
+                    + ".self_attention.c_attn.col_linear.bias"
+                ] = out_val
 
             # Transpose the weights.
             elif weight_or_bias == "weight":
                 out_name = megatron_to_merak[op_name]
-                output_state_dict[f"module.{module_num}" + "." + layer_name + out_name + "weight"] = val #.transpose(0, 1)
+                output_state_dict[
+                    f"module.{module_num}" + "." + layer_name + out_name + "weight"
+                ] = val  # .transpose(0, 1)
 
             # Copy the bias.
             elif weight_or_bias == "bias":
                 out_name = megatron_to_merak[op_name]
-                output_state_dict[f"module.{module_num}" + "." + layer_name + out_name + "bias"] = val
+                output_state_dict[
+                    f"module.{module_num}" + "." + layer_name + out_name + "bias"
+                ] = val
     module_num += 1
 
     # DEBUG.
@@ -458,12 +588,18 @@ def convert_megatron_checkpoint(args, input_state_dict, config, parallel_args):
 
     # The final layernorm.
     if "final_layernorm.weight" in transformer.keys():
-        output_state_dict[f"module.{module_num}.transformer.ln_f.weight"] = transformer["final_layernorm.weight"]
-        output_state_dict[f"module.{module_num}.transformer.ln_f.bias"] = transformer["final_layernorm.bias"]
+        output_state_dict[f"module.{module_num}.transformer.ln_f.weight"] = transformer[
+            "final_layernorm.weight"
+        ]
+        output_state_dict[f"module.{module_num}.transformer.ln_f.bias"] = transformer[
+            "final_layernorm.bias"
+        ]
 
     # For LM head, transformers' wants the matrix to weight embeddings.
     if "word_embeddings_for_head" in model.keys():
-        output_state_dict[f"module.{module_num}.lm_head.weight"] = model["word_embeddings_for_head"]["weight"]
+        output_state_dict[f"module.{module_num}.lm_head.weight"] = model[
+            "word_embeddings_for_head"
+        ]["weight"]
 
     # print(module_num, pipe_rank, model_rank, "end index of modules")
     dist.barrier()
@@ -474,91 +610,133 @@ def convert_megatron_checkpoint(args, input_state_dict, config, parallel_args):
 
 ####################################################################################################
 
-def get_megatron_checkpoint_name(checkpoints_path, parallel_args,
-                        release=False, complete=False):
+
+def get_megatron_checkpoint_name(
+    checkpoints_path, parallel_args, release=False, complete=False
+):
     """A unified checkpoint name."""
-    pipe_rank, pipe_size, pipe_group, model_rank, model_size, prev_rank, next_rank, global_rank_of_stage_0 = parallel_args
+    (
+        pipe_rank,
+        pipe_size,
+        pipe_group,
+        model_rank,
+        model_size,
+        prev_rank,
+        next_rank,
+        global_rank_of_stage_0,
+    ) = parallel_args
 
     iteration = 0
-    with open(checkpoints_path + "/latest_checkpointed_iteration.txt", 'r') as f:
+    with open(checkpoints_path + "/latest_checkpointed_iteration.txt", "r") as f:
         metastring = f.read().strip()
         try:
             iteration = int(metastring)
         except ValueError:
-            release = metastring == 'release'
+            release = metastring == "release"
             if not release:
-                print_rank_0('ERROR: Invalid metadata file {}. Exiting'.format(
-                    tracker_filename))
+                print_rank_0("ERROR: Invalid metadata file {}. Exiting".format(f))
                 sys.exit()
-    assert iteration > 0 or release, 'error parsing metadata file {}'.format(checkpoints_path + "latest_checkpointed_iteration.txt")
+    assert iteration > 0 or release, "error parsing metadata file {}".format(
+        checkpoints_path + "latest_checkpointed_iteration.txt"
+    )
 
     if release:
-        directory = 'release'
+        directory = "release"
     else:
-        directory = 'iter_{:07d}'.format(iteration)
+        directory = "iter_{:07d}".format(iteration)
     # Use both the tensor and pipeline MP rank.
     if pipe_size == 1:
-        return os.path.join(checkpoints_path, directory,
-                            'mp_rank_{:02d}'.format(
-                                model_rank),
-                            'model_optim_rng.pt')
-    return os.path.join(checkpoints_path, directory,
-                        'mp_rank_{:02d}_{:03d}'.format(
-                            model_rank,
-                            pipe_rank),
-                        'model_optim_rng.pt')
+        return os.path.join(
+            checkpoints_path,
+            directory,
+            "mp_rank_{:02d}".format(model_rank),
+            "model_optim_rng.pt",
+        )
+    return os.path.join(
+        checkpoints_path,
+        directory,
+        "mp_rank_{:02d}_{:03d}".format(model_rank, pipe_rank),
+        "model_optim_rng.pt",
+    )
+
 
 def check_checkpoint_path(checkpoints_path):
     if not os.path.exists(checkpoints_path):
         os.makedirs(checkpoints_path)
 
-def get_merak_checkpoint_name(checkpoints_path, parallel_args,
-                        release=False, complete=False):
+
+def get_merak_checkpoint_name(
+    checkpoints_path, parallel_args, release=False, complete=False
+):
     """A unified checkpoint name."""
-    pipe_rank, pipe_size, pipe_group, model_rank, model_size, prev_rank, next_rank, global_rank_of_stage_0 = parallel_args
+    (
+        pipe_rank,
+        pipe_size,
+        pipe_group,
+        model_rank,
+        model_size,
+        prev_rank,
+        next_rank,
+        global_rank_of_stage_0,
+    ) = parallel_args
 
     iteration = 0
     release = True
     if not os.path.exists(checkpoints_path) and dist.get_rank() == 0:
         os.makedirs(checkpoints_path)
-        with open(checkpoints_path + "/latest_checkpointed_iteration.txt", 'w') as f:
-            f.write("release")  
+        with open(checkpoints_path + "/latest_checkpointed_iteration.txt", "w") as f:
+            f.write("release")
     dist.barrier()
 
     if release:
-        directory = 'release'
+        directory = "release"
     else:
-        directory = 'iter_{:07d}'.format(iteration)
+        directory = "iter_{:07d}".format(iteration)
 
     # Use both the tensor and pipeline MP rank.
     if model_size == 1 and pipe_size == 1:
-        check_checkpoint_path(os.path.join(checkpoints_path, 'iter_{:07d}_all_dp'.format(iteration)))
-        return os.path.join(checkpoints_path,
-                            'iter_{:07d}_all_dp'.format(
-                                iteration,
-                            ),
-                            'model_optim.pt')
+        check_checkpoint_path(
+            os.path.join(checkpoints_path, "iter_{:07d}_all_dp".format(iteration))
+        )
+        return os.path.join(
+            checkpoints_path,
+            "iter_{:07d}_all_dp".format(
+                iteration,
+            ),
+            "model_optim.pt",
+        )
 
     elif pipe_size == 1 and model_size != 1:
-        check_checkpoint_path(os.path.join(checkpoints_path, directory,
-                              'mp_rank_{:02d}'.format(model_rank)))
-        return os.path.join(checkpoints_path, directory,
-                            'mp_rank_{:02d}'.format(
-                                model_rank),
-                            'partial_model_optim.pt')
+        check_checkpoint_path(
+            os.path.join(
+                checkpoints_path, directory, "mp_rank_{:02d}".format(model_rank)
+            )
+        )
+        return os.path.join(
+            checkpoints_path,
+            directory,
+            "mp_rank_{:02d}".format(model_rank),
+            "partial_model_optim.pt",
+        )
 
     else:
-        check_checkpoint_path(os.path.join(checkpoints_path, directory,
-                                'mp_rank_{:02d}_pp_rank_{:03d}'.format(
-                                model_rank,
-                                pipe_rank)))
-        return os.path.join(checkpoints_path, directory,
-                            'mp_rank_{:02d}_pp_rank_{:03d}'.format(
-                                model_rank,
-                                pipe_rank),
-                            'partial_model_optim.pt')
+        check_checkpoint_path(
+            os.path.join(
+                checkpoints_path,
+                directory,
+                "mp_rank_{:02d}_pp_rank_{:03d}".format(model_rank, pipe_rank),
+            )
+        )
+        return os.path.join(
+            checkpoints_path,
+            directory,
+            "mp_rank_{:02d}_pp_rank_{:03d}".format(model_rank, pipe_rank),
+            "partial_model_optim.pt",
+        )
+
 
 ####################################################################################################
+
 
 def main():
     # Create the argument parser.
@@ -573,47 +751,79 @@ def main():
     parser.add_argument(
         "--path_to_checkpoint",
         type=str,
-        help="Path to the checkpoint file" # (.zip archive , directory or direct .pt file)",
+        help="Path to the checkpoint file",  # (.zip archive , directory or direct .pt file)",
     )
     parser.add_argument(
         "--path_to_output_checkpoint",
         type=str,
-        help="Path to the output checkpoint file" # (.zip archive , directory or direct .pt file)",
+        help="Path to the output checkpoint file",  # (.zip archive , directory or direct .pt file)",
     )
-    parser.add_argument('--dp', default=-1, type=int, 
-                         help='dimension of data parallelism', required=True)
-    parser.add_argument('--tp', default=-1, type=int, 
-                         help='dimension of tensor model parallelism', required=True)
-    parser.add_argument('--pp', default=-1, type=int, 
-                         help='dimension of pipeline model parallelism', required=True)
-    parser.add_argument('--overlap_level', default=0, type=int, choices=[1, 3],
-                         help='set Merak overlap level')
-    parser.add_argument('--local_rank', default=-1, type=int, 
-                         help='local rank')
-    parser.add_argument('--distributed_backend', default='nccl',
-                       choices=['nccl', 'mpi'])
+    parser.add_argument(
+        "--dp",
+        default=-1,
+        type=int,
+        help="dimension of data parallelism",
+        required=True,
+    )
+    parser.add_argument(
+        "--tp",
+        default=-1,
+        type=int,
+        help="dimension of tensor model parallelism",
+        required=True,
+    )
+    parser.add_argument(
+        "--pp",
+        default=-1,
+        type=int,
+        help="dimension of pipeline model parallelism",
+        required=True,
+    )
+    parser.add_argument(
+        "--overlap_level",
+        default=0,
+        type=int,
+        choices=[1, 3],
+        help="set Merak overlap level",
+    )
+    parser.add_argument("--local_rank", default=-1, type=int, help="local rank")
+    parser.add_argument(
+        "--distributed_backend", default="nccl", choices=["nccl", "mpi"]
+    )
     args = parser.parse_args()
 
     # init Merak or Megatron
     dp = int(args.dp)
-    tp = int(args.tp) 
+    tp = int(args.tp)
     pp = int(args.pp)
     if USE_MERAK:
         Merak.init(pp, tp, dp, backend=args.distributed_backend)
     elif USE_MEGATRON:
         torch.distributed.init_process_group(
             backend=args.distributed_backend,
-            world_size=dp*tp*pp, rank=int(os.getenv('RANK', '0')))
-        mpu.initialize_model_parallel(tensor_model_parallel_size_=tp, pipeline_model_parallel_size_=pp)
+            world_size=dp * tp * pp,
+            rank=int(os.getenv("RANK", "0")),
+        )
+        mpu.initialize_model_parallel(
+            tensor_model_parallel_size_=tp, pipeline_model_parallel_size_=pp
+        )
     assert dp * tp * pp >= 1, "Please set the correct dimension of parallelism"
 
     if pp > 1 and USE_MERAK:
         init_p2p()
 
     parallel_args = init_model_parallel()
-    pipe_rank, pipe_size, pipe_group, model_rank, model_size, prev_rank, next_rank, global_rank_of_stage_0 = parallel_args
+    (
+        pipe_rank,
+        pipe_size,
+        pipe_group,
+        model_rank,
+        model_size,
+        prev_rank,
+        next_rank,
+        global_rank_of_stage_0,
+    ) = parallel_args
 
-    
     #     print(f"current stage is {pipe_rank}, rank {dist.get_rank()}, next {next_rank}, prev {prev_rank}")
     # os._exit(0)
 
@@ -631,11 +841,15 @@ def main():
         print(f"Extracting PyTorch state dictionary from {args.path_to_checkpoint}")
     if args.path_to_checkpoint.endswith(".zip"):
         with zipfile.ZipFile(args.path_to_checkpoint, "r") as checkpoint:
-            with checkpoint.open("release/mp_rank_00/model_optim_rng.pt") as pytorch_dict:
+            with checkpoint.open(
+                "release/mp_rank_00/model_optim_rng.pt"
+            ) as pytorch_dict:
                 input_state_dict = torch.load(pytorch_dict, map_location="cpu")
     elif os.path.isdir(args.path_to_checkpoint):
-        checkpoint_name = get_megatron_checkpoint_name(args.path_to_checkpoint, parallel_args)
-        input_state_dict = torch.load(checkpoint_name , map_location="cpu")
+        checkpoint_name = get_megatron_checkpoint_name(
+            args.path_to_checkpoint, parallel_args
+        )
+        input_state_dict = torch.load(checkpoint_name, map_location="cpu")
     else:
         input_state_dict = torch.load(args.path_to_checkpoint, map_location="cpu")
 
@@ -686,11 +900,15 @@ def main():
     # Convert.
     if dist.get_rank() == 0:
         print("Converting")
-    output_state_dict, layers_num_tensor_var_list = convert_megatron_checkpoint(args, input_state_dict, config, parallel_args)
+    output_state_dict, layers_num_tensor_var_list = convert_megatron_checkpoint(
+        args, input_state_dict, config, parallel_args
+    )
 
     # Print the structure of converted state dict.
     if args.print_checkpoint_structure:
-        recursive_print(None, output_state_dict, args.path_to_output_checkpoint, parallel_args)
+        recursive_print(
+            None, output_state_dict, args.path_to_output_checkpoint, parallel_args
+        )
 
     # # Add tokenizer class info to config
     # # see https://github.com/huggingface/transformers/issues/13906)
@@ -719,7 +937,9 @@ def main():
     # tokenizer.save_pretrained(basename)
 
     # Store the state_dict to file.
-    merak_checkpoint_name = get_merak_checkpoint_name(args.path_to_output_checkpoint, parallel_args)
+    merak_checkpoint_name = get_merak_checkpoint_name(
+        args.path_to_output_checkpoint, parallel_args
+    )
     # output_checkpoint_file = os.path.join(basename, "pytorch_model.bin")
     print(f'Saving checkpoint to "{merak_checkpoint_name}"')
     torch.save(output_state_dict, merak_checkpoint_name)
@@ -728,8 +948,13 @@ def main():
         layer_list = [0]
         for i in range(pipe_size):
             layer_list.append(layers_num_tensor_var_list[i].int().item())
-        print("megatron partition model layer index is ",layer_list)
-        print("If you want to load this model in Merak, please set args","'",f"--partition_method custom --custom_partition {','.join(str(e) for e in layer_list)}","'")
+        print("megatron partition model layer index is ", layer_list)
+        print(
+            "If you want to load this model in Merak, please set args",
+            "'",
+            f"--partition_method custom --custom_partition {','.join(str(e) for e in layer_list)}",
+            "'",
+        )
     dist.barrier()
 
 

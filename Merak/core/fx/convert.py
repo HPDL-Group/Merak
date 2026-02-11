@@ -16,126 +16,175 @@
 # limitations under the License.
 
 import gc
+from typing import Any, Dict, List, Optional, Set, Tuple
+
 import torch
 import torch.distributed
 import torch.nn as nn
-
-from torch.nn import Module
+from tabulate import tabulate
 from torch.fx.graph_module import GraphModule
+from torch.nn import Module
 from transformers import Conv1D
-from transformers.utils.fx import _SUPPORTED_MODELS as tf_suported_models
-from typing import Dict, List, Set, Any, Optional, Tuple
+from transformers.utils.fx import _SUPPORTED_MODELS as tf_supported_models
 
-from Merak import print_rank_0
-from Merak.merak_args import MerakArguments
+from Merak import get_logger
 
 from .. import mpu
-from .tracer.utils import _generate_dummy_input
-from .tracer import (
-    LayerProxyTracer,
-    tf_symbolic_trace,
-    dynamo_trace
-)
 from .graph_shard import _shard_model_transformers
-from .utils import (
-    _load_cache, _save_cache,
-    _split_attr_values,
-    )
+from .tracer import LayerProxyTracer, dynamo_trace, tf_symbolic_trace
+from .tracer.utils import _generate_dummy_input
+from .utils import _load_cache, _save_cache, _split_attr_values
+
 
 def convert_to_sequential(
-        model: Module,
-        args: MerakArguments,
-        dummy_inputs: Optional[Dict[str, torch.Tensor]] = None,
-        extra_leaf_modules: Tuple[Module] = ()
-    ) -> Tuple[Module, List[GraphModule], Dict[str, int]]:
-    
+    model: Module,
+    args: Any,
+    dummy_inputs: Optional[Dict[str, torch.Tensor]] = None,
+    extra_leaf_modules: Tuple[Module] = (),
+) -> Tuple[Module, List[GraphModule], Dict[str, int]]:
+    """
+    Convert a PyTorch model to a sequential model for efficient sharding.
+
+    Args:
+        model: Input PyTorch model to convert.
+        args: MerakArguments containing configuration for conversion.
+        dummy_inputs: Optional dummy inputs for model tracing.
+        extra_leaf_modules: Additional leaf modules to consider during tracing.
+
+    Returns:
+        Tuple containing:
+            - Original model
+            - List of sharded GraphModule instances
+            - Dictionary containing input sharding information
+    """
+    if args.fp16:
+        model = model.half()
+    if args.bf16:
+        model = model.bfloat16()
+    logger = get_logger("simple")
     if args.cache_sharding:
+        # Load cached sharding results if available
         result, input_to_shard = _load_cache(args)
         return model, result, input_to_shard
 
-    assert args.trace_method in ['fx', 'dynamo']
+    # Validate tracing method
+    assert args.trace_method in [
+        "fx",
+        "dynamo",
+    ], f"Unsupported trace method: {args.trace_method}"
 
-    new_suported_models = tf_suported_models + (args.trace_model,)
+    # Initialize supported models
+    supported_models = tf_supported_models + (args.trace_model,)
+
+    # Configure extra leaf modules
     extra_leaf_modules = (Conv1D,) + extra_leaf_modules
 
-    if model.__class__.__name__ in new_suported_models:
+    if model.__class__.__name__ in supported_models:
+        # Generate dummy inputs if not provided
         dummy_inputs = _generate_dummy_input(args, model)
-        if args.trace_method == 'fx':
+
+        if args.trace_method == "fx":
+            # Create symbolic trace using Transformers-fx tracing
             traced = tf_symbolic_trace(
                 model,
                 input_names=args.input_names,
                 leaf_modules=extra_leaf_modules,
-                dummy_inputs=dummy_inputs,
             )
-            # 用于修改trace后的常数
-            # traced = _split_attr_values(model, traced, args)
+            # Split attribute values for optimization
+            traced = _split_attr_values(model, traced, args)
     else:
-        dummy_inputs = dummy_inputs
-        if args.trace_method == 'fx':
+        # Fallback tracing for non-Transformers models
+        if args.trace_method == "fx":
             if isinstance(extra_leaf_modules, list):
                 extra_leaf_modules = tuple(extra_leaf_modules)
             elif isinstance(extra_leaf_modules, nn.Module):
                 extra_leaf_modules = tuple([extra_leaf_modules])
             else:
-                assert isinstance(extra_leaf_modules, tuple), 'leaf_modules should be tuple'
-            
+                assert isinstance(
+                    extra_leaf_modules, tuple
+                ), "leaf_modules must be a tuple"
+
             leaf_modules = extra_leaf_modules
             tracer = LayerProxyTracer(leaf_modules)
             traced_graph = tracer.trace(model)
             traced = torch.fx.GraphModule(model, traced_graph)
 
-    if args.trace_method == 'dynamo':
-        assert mpu.get_model_parallel_world_size() == 1, \
-            "Currently dynamo not supported tensor parallel"
+    if args.trace_method == "dynamo":
+        assert (
+            mpu.get_model_parallel_world_size() == 1
+        ), "Dynamo tracing not supported with tensor parallelism"
         traced = dynamo_trace(model, dummy_inputs)
 
-    ## test code
-    # print_rank_0(traced.graph)
-    # if torch.distributed.get_rank() == 0:
-    #   traced.graph.print_tabular()
-    # print_rank_0(traced.code)
-    # print_rank_0(traced)
-    # print_rank_0(model)
+    # Debugging: Print graph details
+    logger.debug(traced.graph, ranks=[0])
+    node_specs = [
+        [n.op, n.name, n.target, n.args, n.kwargs] for n in traced.graph.nodes
+    ]
+    msg = tabulate(node_specs, headers=["opcode", "name", "target", "args", "kwargs"])
+    logger.debug(msg, ranks=[0])
+    logger.debug(traced.code, ranks=[0])
+    logger.debug(traced, ranks=[0])
+    logger.debug(model, ranks=[0])
 
-    # shard GraphModule to List[GraphModule]
-    result, input_to_shard = _shard_model_transformers(
-            traced, model, args.shard_count
-        )
+    # Shard the traced GraphModule
+    result, input_to_shard = _shard_model_transformers(traced, model, args)
 
+    # Clean up memory
     del traced
     gc.collect()
     if not args.use_cpu:
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
+
+    # Store dummy inputs for future use
     result[0].dummy_inputs = dummy_inputs
 
+    # Save caching results if enabled
     if args.cache_sharding:
         _save_cache(result, input_to_shard, args)
 
-    # test code
-    # for idx, i in enumerate(result):
-    #     if torch.distributed.get_rank() == 0:
-    #         print(f"==================={idx}======================")
-    #         i.graph.print_tabular()
-    #     print_rank_0(i.code)
-    
+    # Debugging: Print final graph details
+    for idx, i in enumerate(result):
+        logger.debug(f"==================={idx}======================", ranks=[0])
+        node_specs = [[n.op, n.name, n.target, n.args, n.kwargs] for n in i.graph.nodes]
+        msg = tabulate(
+            node_specs, headers=["opcode", "name", "target", "args", "kwargs"]
+        )
+        logger.debug(msg, ranks=[0])
+        logger.debug(i.code, ranks=[0])
 
     return model, result, input_to_shard
 
+
 def add_inputs_to_shards(gm: GraphModule, inputs: List[str]) -> GraphModule:
-    # for input_name in inputs:
+    """
+    Add input placeholders to the sharded GraphModule.
+
+    Args:
+        gm: GraphModule to modify.
+        inputs: List of input names to add as placeholders.
+
+    Returns:
+        Modified GraphModule with additional input placeholders.
+    """
     add_outputs = []
     for node in gm.graph.nodes:
-        if node.op == 'placeholder' and node.next.op != 'placeholder' and add_outputs == []:
+        if (
+            node.op == "placeholder"
+            and node.next.op != "placeholder"
+            and add_outputs == []
+        ):
             with gm.graph.inserting_after(node):
                 for input_name in reversed(inputs):
                     pl_node = gm.graph.create_node("placeholder", input_name)
                     add_outputs.append(pl_node)
         elif node.op == "output":
             with gm.graph.inserting_after(node):
-                node_inputs = tuple(node.args) if len(node.args) == 1 else tuple(node.args[0])
+                node_inputs = (
+                    tuple(node.args) if len(node.args) == 1 else tuple(node.args[0])
+                )
                 added_output = node_inputs + tuple(reversed(add_outputs))
-                gm.graph.create_node(op='output', target='output', args=(added_output,))
+                gm.graph.create_node(op="output", target="output", args=(added_output,))
                 # gm.graph.output(added_output)
             gm.graph.erase_node(node)
             break

@@ -15,28 +15,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+
 import torch
-import torch.distributed as dist
+
 try:
     import torch_ft
 except:
     pass
 
-topo = None
-communication_grid = None
 
-def print_rank_0(message: str):
-    """If distributed is initialized print only on rank 0."""
-    if dist.is_initialized():
-        if dist.get_rank() == 0:
-            print(message, flush=True)
-    else:
-        print(message, flush=True)
-
-def init(pp: int, tp: int, dp: int, sp: int = 1, backend: str = 'nccl'):
+def init(pp: int = -1, tp: int = -1, dp: int = -1, sp: int = 1, backend: str = "nccl"):
     """
-    Initialized the distributed communication groups, include data parallel, 
-    tensor model parallel and pipeline model parallel. Each parallel degree 
+    Initialized the distributed communication groups, include data parallel,
+    tensor model parallel and pipeline model parallel. Each parallel degree
     has it own communication group, we can ge the rank or size through mpu API.
 
     Parameters:
@@ -45,49 +37,19 @@ def init(pp: int, tp: int, dp: int, sp: int = 1, backend: str = 'nccl'):
     -   pp (int) -- Parallel degree of pipeline model parallelism.
     -   sp (int) -- Parallel degree of sequence model parallelism.
     """
-    compile_config = torch.__config__.show().split(", ")
-    if 'USE_NCCL=1' in compile_config or 'USE_NCCL=ON' in compile_config:
-        backend = 'nccl'
-    elif 'USE_MPI=1' in compile_config or 'USE_MPI=ON' in compile_config:
-        backend = 'mpi'
+    # Get parallelism dim from parameters or enviroments
+    if dp * tp * dp < 0:
+        dp = int(os.getenv("DP", "-1"))
+        pp = int(os.getenv("PP", "-1"))
+        tp = int(os.getenv("TP", "-1"))
+        sp = int(os.getenv("SP", "1"))
     else:
-        raise RuntimeError(f"Distributed package doesn't have NCCL/MPI built in")
-    if not dist.is_initialized():
-        dist.init_process_group(backend)
-    # we init topology and communication grid here
-    from .core.mpu.topology import (
-        PipeDataSequenceModelParallelTopology,
-        PipelineParallelGrid)
-    global topo
-    topo = PipeDataSequenceModelParallelTopology(num_pp=pp, num_dp=dp, num_sp=sp, num_mp=tp)
-    global communication_grid
-    communication_grid = PipelineParallelGrid(
-                        topo,
-                        dist.new_group(ranks=range(dist.get_world_size()))
-                        )
+        os.environ["DP"] = f"{dp}"
+        os.environ["PP"] = f"{pp}"
+        os.environ["TP"] = f"{tp}"
+        os.environ["SP"] = f"{sp}"
 
-
-    # set mpu for transformers model
-    from .core.mpu.initialize import (
-        set_data_parallel_group,
-        set_model_parallel_group,
-        set_pipe_parallel_group,
-        set_sequence_parallel_group)
-
-    set_data_parallel_group(communication_grid.get_data_parallel_group())
-    set_model_parallel_group(communication_grid.get_slice_parallel_group())
-    set_pipe_parallel_group(communication_grid.get_pipe_parallel_group())
-    set_sequence_parallel_group(communication_grid.get_sequence_parallel_group())
-
-    print_rank_0(f'Pipeline Model Parallel Size: {pp} \
-                   \nTensor Model Parallel Size: {tp} \
-                   \nSequence Parallel Size: {sp} \
-                   \nData Parallel Size: {dp} \n')
-
-def get_topo():
-    global topo
-    return topo
-
-def get_grid():
-    global communication_grid
-    return communication_grid
+    assert dp * tp * dp > 0, (
+        "Please set dp, pp, tp dimension in Merak.init() or "
+        "set enviroments(DP, PP, TP)"
+    )

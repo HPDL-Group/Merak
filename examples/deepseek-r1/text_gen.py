@@ -15,45 +15,47 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import Merak
+import enum
 import os
-from Merak import MerakArguments, print_rank_0
-from Merak.inference import text_generation_pipeline
-from Merak import MerakArguments, MerakTrainer, print_rank_0, init_empty_weights
+import random
 
+import numpy as np
+import torch
 from transformers import (
     AutoConfig,
-    AutoModelForCausalLM, 
-    AutoTokenizer, 
-    set_seed,
-    HfArgumentParser,
+    AutoModelForCausalLM,
+    AutoTokenizer,
     DataCollatorForLanguageModeling,
-    DataCollatorForSeq2Seq
+    DataCollatorForSeq2Seq,
+    HfArgumentParser,
+    set_seed,
 )
-import torch
-import enum
 
-import random
-import numpy as np
+import Merak
+from Merak import MerakArguments, MerakTrainer, init_empty_weights
+from Merak.inference import text_generation_pipeline
+
 
 def parse_option(parser):
     # Add custom command-line arguments
-    parser.add_argument('--cache-dir', type=str, help='Directory for cache storage')
-    parser.add_argument('--model-name', type=str, help='Model name (e.g., deepseekr1)')
-    parser.add_argument('--model_path', type=str, help='Path to model directory')
+    parser.add_argument("--cache-dir", type=str, help="Directory for cache storage")
+    parser.add_argument("--model-name", type=str, help="Model name (e.g., deepseekr1)")
+    parser.add_argument("--model_path", type=str, help="Path to model directory")
 
     return parser
+
 
 class ReturnType(enum.Enum):
     TENSORS = 0
     NEW_TEXT = 1
     FULL_TEXT = 2
 
+
 def main():
     # Initialize distributed environment
-    pp = int(os.environ['PP'])  # Pipeline parallelism
-    tp = int(os.environ['TP'])  # Tensor parallelism
-    dp = int(os.environ['DP'])  # Data parallelism
+    pp = int(os.environ["PP"])  # Pipeline parallelism
+    tp = int(os.environ["TP"])  # Tensor parallelism
+    dp = int(os.environ["DP"])  # Data parallelism
     Merak.init(pp, tp, dp)
 
     # Merge HuggingFace and custom arguments

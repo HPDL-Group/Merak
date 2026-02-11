@@ -23,6 +23,7 @@ import torch
 import torch.nn as nn
 from transformers import Conv1D
 
+
 @contextmanager
 def init_empty_weights():
     """
@@ -56,23 +57,22 @@ def init_empty_weights():
     with init_on_device(torch.device("meta")) as f:
         yield f
 
+
 @contextmanager
 def init_on_device(device: torch.device):
 
     old_register_parameter = nn.Module.register_parameter
 
-    def register_empty_parameter(
-        module: nn.Module,
-        name: str,
-        param: torch.Tensor
-        ):
+    def register_empty_parameter(module: nn.Module, name: str, param: torch.Tensor):
         old_register_parameter(module, name, param)
         if isinstance(module, (nn.Embedding, nn.Linear, Conv1D)):
             if param is not None:
                 param_cls = type(module._parameters[name])
                 kwargs = module._parameters[name].__dict__
                 kwargs["requires_grad"] = param.requires_grad
-                module._parameters[name] = param_cls(module._parameters[name].to(device), **kwargs)
+                module._parameters[name] = param_cls(
+                    module._parameters[name].to(device), **kwargs
+                )
 
     try:
         nn.Module.register_parameter = register_empty_parameter

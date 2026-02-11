@@ -18,16 +18,21 @@
 # Parts of the code here are adapted from https://github.com/NVIDIA/Megatron-LM/blob/806422e5ec35c27b027dbb413b05e27b6590dc56/megatron/model/utils.py
 # Parts of the code here are adapted from https://github.com/microsoft/DeepSpeed/blob/85acf14c58658964a796c5c901b58123f99fb1df/deepspeed/runtime/utils.py
 
+import random
+from bisect import bisect_left
+from math import ceil, floor
+from typing import List, Union
 
+import numpy
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-from math import ceil, floor
-from bisect import bisect_left
-from typing import List, Union
+
+from Merak import get_logger
 
 from .. import mpu
-from ..printer import logger
+from ..recompute.checkpointing import model_parallel_cuda_manual_seed
+
 
 def set_random_seed(seed: int):
     """Set the random seed for common PRNGs used during training: random,
@@ -36,23 +41,19 @@ def set_random_seed(seed: int):
     Args:
         seed (int): the seed to use
     """
-    import numpy
-    import random
-    from ..recompute.checkpointing import model_parallel_cuda_manual_seed
 
     if seed is not None and seed > 0:
         random.seed(seed)
         numpy.random.seed(seed)
         torch.manual_seed(seed)
         # if torch.cuda.device_count() > 0:
-        #     model_parallel_cuda_manual_seed(seed)
-        # dsp在tp或sp时，dropout算子也需考虑同一stage的不同rank设备设置不同的种子
-        model_parallel_cuda_manual_seed(seed) 
+        model_parallel_cuda_manual_seed(seed)
     else:
-        raise ValueError('Seed ({}) should be a positive integer.'.format(seed))
+        raise ValueError(f"Seed ({seed}) should be a positive integer.")
+
 
 def prefix_sum_inc(weights: List[int]) -> List[int]:
-    """ Compute an inclusive prefix sum.
+    """Compute an inclusive prefix sum.
 
     Example:
         >>> prefix_sum_inc([3,4,5])
@@ -63,7 +64,10 @@ def prefix_sum_inc(weights: List[int]) -> List[int]:
         weights_[x] += weights_[x - 1]
     return weights_
 
-def partition_uniform(num_items: int, num_parts: int, use_ceil: bool = True) -> List[int]:
+
+def partition_uniform(
+    num_items: int, num_parts: int, use_ceil: bool = True
+) -> List[int]:
     parts = [0] * (num_parts + 1)
     # First check for the trivial edge case
     if num_items <= num_parts:
@@ -88,7 +92,9 @@ def partition_uniform(num_items: int, num_parts: int, use_ceil: bool = True) -> 
     return parts
 
 
-def _lprobe(weights: List[int], num_parts: int, bottleneck: int) -> Union[List[int], bool]:
+def _lprobe(
+    weights: List[int], num_parts: int, bottleneck: int
+) -> Union[List[int], bool]:
     num_items = len(weights)
     total_weight = weights[-1]
 
@@ -106,11 +112,9 @@ def _lprobe(weights: List[int], num_parts: int, bottleneck: int) -> Union[List[i
             step += chunksize
 
         # Find the end index of partition p
-        parts[p] = bisect_left(weights,
-                               bsum,
-                               lo=step - chunksize,
-                               hi=min(step,
-                                      num_items))
+        parts[p] = bisect_left(
+            weights, bsum, lo=step - chunksize, hi=min(step, num_items)
+        )
         # Nothing more to partition, return early
         if parts[p] == num_items:
             # See if the current partition is overweight.
@@ -139,7 +143,9 @@ def _rb_partition_balanced(weights: List[int], num_parts: int, eps: float) -> in
     return upper
 
 
-def partition_balanced(weights: List[int], num_parts: int, eps: float = 1e-3) -> List[int]:
+def partition_balanced(
+    weights: List[int], num_parts: int, eps: float = 1e-3
+) -> List[int]:
     num_items = len(weights)
     # First check for the trivial edge case
     if num_items <= num_parts:
@@ -156,10 +162,12 @@ def partition_balanced(weights: List[int], num_parts: int, eps: float = 1e-3) ->
 
     return parts
 
+
 def print_trainable_parameters(model: nn.Module):
     """
     Prints the number of trainable parameters in the model.
     """
+    logger = get_logger("simple")
     dist.barrier()
     trainable_params = 0
     all_param = 0

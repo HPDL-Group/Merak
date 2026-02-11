@@ -13,16 +13,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import torch
+from typing import Dict, List, Tuple, Union
 
+import torch
 from torch.fx._compatibility import compatibility
 from torch.fx.graph_module import GraphModule
-from typing import Dict, List, Union, Tuple
+
 
 def dynamo_trace(
-        module: torch.nn.Module,
-        dummy_inputs: Union[Dict[str, torch.Tensor], Tuple[torch.Tensor], List[torch.Tensor]]
-    ) -> List[GraphModule]:
+    module: torch.nn.Module,
+    dummy_inputs: Union[
+        Dict[str, torch.Tensor], Tuple[torch.Tensor], List[torch.Tensor]
+    ],
+) -> List[GraphModule]:
     if isinstance(dummy_inputs, dict):
         inputs = tuple(dummy_inputs.values())
     elif isinstance(dummy_inputs, (tuple, list)):

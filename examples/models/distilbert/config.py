@@ -2,9 +2,7 @@ def load_config(model_name):
     if model_name == "distilbert-base-cased":
         config = {
             "activation": "gelu",
-            "architectures": [
-                "DistilBertForMaskedLM"
-            ],
+            "architectures": ["DistilBertForMaskedLM"],
             "attention_dropout": 0.1,
             "dim": 768,
             "dropout": 0.1,
@@ -20,10 +18,10 @@ def load_config(model_name):
             "seq_classif_dropout": 0.2,
             "sinusoidal_pos_embds": False,
             "tie_weights_": True,
-            'return_dict': False,
+            "return_dict": False,
             "use_cache": False,
-            "_attn_implementation": 'eager',
-            "vocab_size": 28996
+            "_attn_implementation": "eager",
+            "vocab_size": 28996,
         }
     else:
         raise ValueError(f"No {model_name} config")

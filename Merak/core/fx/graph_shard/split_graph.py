@@ -15,12 +15,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Any, Dict, List, Optional, Set, Tuple
+
 import torch
-
 from torch.fx.graph_module import GraphModule
-from typing import Dict, List, Set, Any, Optional, Tuple
-
-from Merak.merak_args import get_args
 
 from .farthest_deps import farthest_deps_split
 from .layer_config import layer_config_split
@@ -28,17 +26,17 @@ from .nearest_deps import nearest_deps_split
 
 
 def _shard_model_transformers(
-        traced_graph_module: GraphModule,
-        model: torch.nn.Module,
-        shard_count=3,
-    ) -> Tuple[List[GraphModule], Dict[str, int]]:
+    traced_graph_module: GraphModule,
+    model: torch.nn.Module,
+    args,
+) -> Tuple[List[GraphModule], Dict[str, int]]:
     """Utility used to shard a model using torch.fx.
 
     This function traces the model twice in an attempt to identify the
     right cutpoints and then shard the model. In the first pass we calculate
     the number of parameters as we are tracing the graph and mark nodes at
     which we might want to create a new module. In the second pass we
-    modify the graph by inserting placeholders and output nodes to 
+    modify the graph by inserting placeholders and output nodes to
     essentially shard the graph.
 
     We don't support skip connections between shards. This means that all
@@ -49,14 +47,13 @@ def _shard_model_transformers(
     `shard_count` mentioned by the user.
 
     Args:
-        model (nn.Module): Model to be sharded as specified by the device 
+        model (nn.Module): Model to be sharded as specified by the device
         count.
 
-        shard_count (int): Number of shards that we want to split the model 
+        shard_count (int): Number of shards that we want to split the model
         into.
 
     """
-    args = get_args()
 
     # a experience users number threshold, a node has more user than this
     # threshold indicate the node is needed in multiple stages and
@@ -67,14 +64,18 @@ def _shard_model_transformers(
         if len(list(node.users)) > output_node_threshold:
             output_nodes_count[node.name] = len(list(node.users))
 
-    if args.split_method == 'farthest_min_deps':
-        module_list, func_inputs = farthest_deps_split(traced_graph_module, 
-                                                       model, shard_count, 
-                                                       output_nodes_count)
-    elif args.split_method == 'layer_split':
-        module_list, func_inputs = layer_config_split(traced_graph_module, model)
-    elif args.split_method == 'nearest_min_deps':
-        module_list, func_inputs = nearest_deps_split(traced_graph_module, model)
+    if args.split_method == "farthest_min_deps":
+        module_list, func_inputs = farthest_deps_split(
+            traced_graph_module, model, args, output_nodes_count
+        )
+    elif args.split_method == "layer_split":
+        module_list, func_inputs = layer_config_split(traced_graph_module, model, args)
+    elif args.split_method == "nearest_min_deps":
+        module_list, func_inputs = nearest_deps_split(traced_graph_module, model, args)
     else:
-        assert args.split_method in ['farthest_min_deps', 'layer_split', 'nearest_min_deps']
+        assert args.split_method in [
+            "farthest_min_deps",
+            "layer_split",
+            "nearest_min_deps",
+        ]
     return module_list, func_inputs

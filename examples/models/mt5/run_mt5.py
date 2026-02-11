@@ -15,23 +15,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import Merak
 import torch
-
-from Merak import MerakArguments, MerakTrainer, init_empty_weights
 from config import load_config
-from transformers import (
-    set_seed,
-    HfArgumentParser,
-    MT5ForConditionalGeneration,
-    MT5Config,
-)
+from transformers import HfArgumentParser, MT5Config, MT5ForConditionalGeneration, set_seed
+
+import Merak
+from Merak import MerakArguments, MerakTrainer, init_empty_weights
 from Merak.utils.datasets import DynamicGenDataset
 
 
 # Add custom command-line arguments
 def parse_option(parser):
-    parser.add_argument('--model_name', type=str, help='Name of the model to load (e.g. gpt2)')
+    parser.add_argument(
+        "--model_name", type=str, help="Name of the model to load (e.g. gpt2)"
+    )
     return parser
 
 
@@ -46,16 +43,27 @@ def main():
     if tp > 1:
         from Merak.core.tensor_parallel.mp_attrs import set_tp_layer_lists
 
-        col_para_list = ['SelfAttention.q', 'SelfAttention.k', 'SelfAttention.v',
-                         'EncDecAttention.q', 'EncDecAttention.k', 'EncDecAttention.v',
-                         'DenseReluDense.wi_0', 'DenseReluDense.wi_1']
-        row_para_list = ['SelfAttention.o', 'EncDecAttention.o', 'DenseReluDense.wo']
-        weight_change_list = ('relative_attention_bias', 1),
-        tp_attr_list = ['n_heads', 'inner_dim']
+        col_para_list = [
+            "SelfAttention.q",
+            "SelfAttention.k",
+            "SelfAttention.v",
+            "EncDecAttention.q",
+            "EncDecAttention.k",
+            "EncDecAttention.v",
+            "DenseReluDense.wi_0",
+            "DenseReluDense.wi_1",
+        ]
+        row_para_list = ["SelfAttention.o", "EncDecAttention.o", "DenseReluDense.wo"]
+        weight_change_list = (("relative_attention_bias", 1),)
+        tp_attr_list = ["n_heads", "inner_dim"]
 
         # manully set tp attribute for swin model
-        set_tp_layer_lists(col_para_list=col_para_list, row_para_list=row_para_list,
-                           weight_change_list=weight_change_list, tp_attr_list=tp_attr_list)
+        set_tp_layer_lists(
+            col_para_list=col_para_list,
+            row_para_list=row_para_list,
+            weight_change_list=weight_change_list,
+            tp_attr_list=tp_attr_list,
+        )
 
     # Parse training and model arguments
     hfparser = HfArgumentParser(MerakArguments)
@@ -75,7 +83,10 @@ def main():
 
     # Create a fake dataset for training
     train_dataset = DynamicGenDataset(
-        model.config, mode="condition", dataset_size=1e6, seq_length=training_args.seq_length
+        model.config,
+        mode="condition",
+        dataset_size=1e6,
+        seq_length=training_args.seq_length,
     )
 
     # Initialize trainer with model, training arguments and dataset

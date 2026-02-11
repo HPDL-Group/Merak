@@ -1,5 +1,5 @@
 __all__ = [
-    'ModuleRebuild',
+    "ModuleRebuild",
 ]
 
 from .model_parallel import ModuleRebuild

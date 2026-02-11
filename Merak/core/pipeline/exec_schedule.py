@@ -17,12 +17,25 @@
 
 from abc import ABC, abstractmethod
 
-__all__ = ['PipeSchedule', 'OptimizerStep', 'ReduceGrads',
-           'ReduceTiedGrads', 'LoadMicroBatch', 'ForwardPass',
-           'BackwardPass', 'SendActivation', 'RecvActivation',
-           'SendGrad', 'RecvGrad', 'SendActivationRecvGrad',
-           'SendGradRecvActivation', 'PreCheckpointForwardPass',
-           'RecomputeRecvGrad', 'RestoreRecomputeStatus']
+__all__ = [
+    "PipeSchedule",
+    "OptimizerStep",
+    "ReduceGrads",
+    "ReduceTiedGrads",
+    "LoadMicroBatch",
+    "ForwardPass",
+    "BackwardPass",
+    "SendActivation",
+    "RecvActivation",
+    "SendGrad",
+    "RecvGrad",
+    "SendActivationRecvGrad",
+    "SendGradRecvActivation",
+    "PreCheckpointForwardPass",
+    "RecomputeRecvGrad",
+    "RestoreRecomputeStatus",
+]
+
 
 def call_to_str(base, *args, **kwargs):
     """Construct a string representation of a call.
@@ -35,15 +48,16 @@ def call_to_str(base, *args, **kwargs):
     Returns:
         str: A string representation of base(*args, **kwargs)
     """
-    name = f'{base}('
+    name = f"{base}("
     if args:
-        name += ', '.join(repr(arg) for arg in args)
+        name += ", ".join(repr(arg) for arg in args)
         if kwargs:
-            name += ', '
+            name += ", "
     if kwargs:
-        name += ', '.join(f'{key}={repr(arg)}' for key, arg in kwargs.items())
-    name += ')'
+        name += ", ".join(f"{key}={repr(arg)}" for key, arg in kwargs.items())
+    name += ")"
     return name
+
 
 class PipeSchedule(ABC):
     """Directs the execution of a pipeline engine by generating sequences of
@@ -83,6 +97,7 @@ class PipeSchedule(ABC):
         stages (int): The number of pipeline stages.
         stage_id (int): The pipe stage that will execute the generated schedule.
     """
+
     def __init__(self, micro_batches, stages, stage_id):
         super().__init__()
         self.micro_batches = micro_batches
@@ -177,6 +192,7 @@ class PipeSchedule(ABC):
             self.it = self.steps()
         return next(self.it)
 
+
 class PipeInstruction:
     """Base class for all instructions to be executed by the pipeline engine.
 
@@ -187,6 +203,7 @@ class PipeInstruction:
     Args:
         kwargs (optional): keyword arguments to store as members
     """
+
     def __init__(self, **kwargs):
         self.name = self.__class__.__name__
         self.kwargs = kwargs
@@ -196,6 +213,7 @@ class PipeInstruction:
     def __repr__(self):
         return call_to_str(self.name, **self.kwargs)
 
+
 class OptimizerStep(PipeInstruction):
     """Performs one step with the optimizer and zeros gradients.
 
@@ -204,6 +222,7 @@ class OptimizerStep(PipeInstruction):
 
     .. note:: Can be a synchronization point among data-parallel ranks.
     """
+
     pass
 
 
@@ -211,6 +230,7 @@ class ReduceGrads(PipeInstruction):
     """Reduce the computed gradients among data-parallel processes within the
     stage.
     """
+
     pass
 
 
@@ -224,6 +244,7 @@ class ReduceTiedGrads(PipeInstruction):
         includes all pipeline stages. This instruction should be scheduled
         carefully to avoid deadlocks.
     """
+
     pass
 
 
@@ -233,6 +254,7 @@ class BufferOpInstruction(PipeInstruction):
     Args:
         buffer_id (int): the index of the pipeline buffer() to modify.
     """
+
     def __init__(self, buffer_id, **kwargs):
         super().__init__(buffer_id=buffer_id, **kwargs)
 
@@ -247,6 +269,7 @@ class LoadMicroBatch(BufferOpInstruction):
 
         buffers['inputs'][buffer_id] = next(data_iter)
     """
+
     pass
 
 
@@ -260,6 +283,7 @@ class ForwardPass(BufferOpInstruction):
 
         buffers['ouputs'][buffer_id] = forward(buffers['inputs'][buffer_id])
     """
+
     pass
 
 
@@ -275,6 +299,7 @@ class BackwardPass(BufferOpInstruction):
         torch.autograd.backward(tensors=outputs,
                                 grad_tensors=gradients)
     """
+
     pass
 
 
@@ -293,6 +318,7 @@ class SendActivation(BufferOpInstruction):
         :class:`RecvActivation`
         on the next pipeline stage to avoid deadlock.
     """
+
     pass
 
 
@@ -310,6 +336,7 @@ class RecvActivation(BufferOpInstruction):
         :class:`SendActivation`
         on the previous pipeline stage to avoid deadlock.
     """
+
     pass
 
 
@@ -327,6 +354,7 @@ class SendGrad(BufferOpInstruction):
         :class:`RecvGrad`
         on the previous pipeline stage to avoid deadlock.
     """
+
     pass
 
 
@@ -342,19 +370,25 @@ class RecvGrad(BufferOpInstruction):
         :class:`SendGrad`
         on the next pipeline stage to avoid deadlock.
     """
+
     pass
+
 
 class SendActivationRecvGrad(BufferOpInstruction):
     pass
 
+
 class SendGradRecvActivation(BufferOpInstruction):
     pass
+
 
 class PreCheckpointForwardPass(BufferOpInstruction):
     pass
 
+
 class RecomputeRecvGrad(BufferOpInstruction):
     pass
+
 
 class RestoreRecomputeStatus(PipeInstruction):
     pass

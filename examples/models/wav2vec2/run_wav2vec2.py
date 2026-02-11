@@ -16,24 +16,25 @@
 # limitations under the License.
 
 import torch
-import Merak
-
-from Merak import MerakArguments, MerakTrainer, init_empty_weights
-
-from transformers.models.wav2vec2.modeling_wav2vec2 import _compute_mask_indices
 from transformers import (
     DataCollatorForLanguageModeling,
-    set_seed,
-    Wav2Vec2ForCTC,
-    Wav2Vec2Config,
     HfArgumentParser,
+    Wav2Vec2Config,
+    Wav2Vec2ForCTC,
+    set_seed,
 )
+from transformers.models.wav2vec2.modeling_wav2vec2 import _compute_mask_indices
+
+import Merak
+from Merak import MerakArguments, MerakTrainer, init_empty_weights
 from Merak.utils.datasets import DynamicGenDataset
 
 
 # Add custom command-line arguments
 def parse_option(parser):
-    parser.add_argument('--model_name', type=str, help='Name of the model to load (e.g. gpt2)')
+    parser.add_argument(
+        "--model_name", type=str, help="Name of the model to load (e.g. gpt2)"
+    )
     return parser
 
 
@@ -44,7 +45,7 @@ def main():
     tp = 1
     dp = 1
     Merak.init(pp, tp, dp)
-    
+
     # merge args
     hfparser = HfArgumentParser(MerakArguments)
     parser = parse_option(hfparser)
@@ -53,13 +54,16 @@ def main():
     if tp > 1:
         from Merak.core.tensor_parallel.mp_attrs import set_tp_layer_lists
 
-        col_para_list = ['q_proj', 'k_proj', 'v_proj', 'intermediate_dense']
-        row_para_list = ['out_proj', 'output_dense']
-        tp_attr_list = ['num_heads']
+        col_para_list = ["q_proj", "k_proj", "v_proj", "intermediate_dense"]
+        row_para_list = ["out_proj", "output_dense"]
+        tp_attr_list = ["num_heads"]
 
         # manully set tp attribute for swin model
-        set_tp_layer_lists(col_para_list=col_para_list, row_para_list=row_para_list, 
-                           tp_attr_list=tp_attr_list)
+        set_tp_layer_lists(
+            col_para_list=col_para_list,
+            row_para_list=row_para_list,
+            tp_attr_list=tp_attr_list,
+        )
 
     # Set seed before initializing model.
     set_seed(training_args.seed)
@@ -67,9 +71,9 @@ def main():
     # set model config
     # config_kwarg = load_config(args.model_name)
     config_kwarg = {
-        'conv_kernel': (10, 2, 2, 2, 2, 1, 1),
-        'return_dict': False,
-        'use_cache': False
+        "conv_kernel": (10, 2, 2, 2, 2, 1, 1),
+        "return_dict": False,
+        "use_cache": False,
     }
     config = Wav2Vec2Config(**config_kwarg)
 
@@ -77,13 +81,15 @@ def main():
     with init_empty_weights():
         model = Wav2Vec2ForCTC(config)
     model.eval()
-    model.config._attn_implementation = 'eager'
+    model.config._attn_implementation = "eager"
 
     # Create a fake dataset for training
     eval_dataset = DynamicGenDataset(
-        model.config, mode="speech", dataset_size=1e6, seq_length=training_args.seq_length
+        model.config,
+        mode="speech",
+        dataset_size=1e6,
+        seq_length=training_args.seq_length,
     )
-
 
     class MyTrainer(MerakTrainer):
         # define custom loss function
@@ -100,13 +106,15 @@ def main():
 
                 # retrieve loss input_lengths from attention_mask
                 attention_mask = None
-                input_ids = torch.randint(1, model.config.vocab_size,
-                                      [training_args.per_device_eval_batch_size,
-                                       self.args.seq_length]).float()
+                input_ids = torch.randint(
+                    1,
+                    model.config.vocab_size,
+                    [training_args.per_device_eval_batch_size, self.args.seq_length],
+                ).float()
                 attention_mask = (
-                    attention_mask if attention_mask is not None else torch.ones_like(
-                        input_ids,
-                        dtype=torch.long)
+                    attention_mask
+                    if attention_mask is not None
+                    else torch.ones_like(input_ids, dtype=torch.long)
                 )
                 input_lengths = model._get_feat_extract_output_lengths(
                     attention_mask.sum(-1)
@@ -119,8 +127,9 @@ def main():
                 flattened_targets = labels.masked_select(labels_mask)
 
                 # ctc_loss doesn't support fp16
-                log_probs = torch.nn.functional.log_softmax(outputs, dim=-1,
-                                                            dtype=torch.float32).transpose(0, 1)
+                log_probs = torch.nn.functional.log_softmax(
+                    outputs, dim=-1, dtype=torch.float32
+                ).transpose(0, 1)
 
                 with torch.backends.cudnn.flags(enabled=False):
                     loss = torch.nn.functional.ctc_loss(
@@ -133,13 +142,14 @@ def main():
                         zero_infinity=model.config.ctc_zero_infinity,
                     )
                 return loss
+
             return loss_fn
 
-    # using our distributed trainer        
+    # using our distributed trainer
     trainer = MyTrainer(
         model=model,
         args=training_args,
-        eval_dataset=eval_dataset, 
+        eval_dataset=eval_dataset,
         # leaf_modules=(_compute_mask_indices,)
         # Data collator will default to DataCollatorWithPadding, so we change it.
         # data_collator=data_collator,

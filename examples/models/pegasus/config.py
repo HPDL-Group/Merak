@@ -6,9 +6,7 @@ def load_config(model_name):
             "activation_function": "relu",
             "add_bias_logits": False,
             "add_final_layer_norm": True,
-            "architectures": [
-                "PegasusForConditionalGeneration"
-            ],
+            "architectures": ["PegasusForConditionalGeneration"],
             "attention_dropout": 0.1,
             "bos_token_id": 0,
             "classif_dropout": 0.0,
@@ -29,18 +27,10 @@ def load_config(model_name):
             "force_bos_token_to_be_generated": False,
             "forced_eos_token_id": 1,
             "gradient_checkpointing": False,
-            "id2label": {
-                "0": "LABEL_0",
-                "1": "LABEL_1",
-                "2": "LABEL_2"
-            },
+            "id2label": {"0": "LABEL_0", "1": "LABEL_1", "2": "LABEL_2"},
             "init_std": 0.02,
             "is_encoder_decoder": True,
-            "label2id": {
-                "LABEL_0": 0,
-                "LABEL_1": 1,
-                "LABEL_2": 2
-            },
+            "label2id": {"LABEL_0": 0, "LABEL_1": 1, "LABEL_2": 2},
             "length_penalty": 0.8,
             "max_length": 256,
             "max_position_embeddings": 1024,
@@ -54,76 +44,76 @@ def load_config(model_name):
             "static_position_embeddings": True,
             "task_specific_params": {
                 "summarization_aeslc": {
-                "length_penalty": 0.6,
-                "max_length": 32,
-                "max_position_embeddings": 512
+                    "length_penalty": 0.6,
+                    "max_length": 32,
+                    "max_position_embeddings": 512,
                 },
                 "summarization_arxiv": {
-                "length_penalty": 0.8,
-                "max_length": 256,
-                "max_position_embeddings": 1024
+                    "length_penalty": 0.8,
+                    "max_length": 256,
+                    "max_position_embeddings": 1024,
                 },
                 "summarization_big_patent": {
-                "length_penalty": 0.7,
-                "max_length": 256,
-                "max_position_embeddings": 1024
+                    "length_penalty": 0.7,
+                    "max_length": 256,
+                    "max_position_embeddings": 1024,
                 },
                 "summarization_billsum": {
-                "length_penalty": 0.6,
-                "max_length": 256,
-                "max_position_embeddings": 1024
+                    "length_penalty": 0.6,
+                    "max_length": 256,
+                    "max_position_embeddings": 1024,
                 },
                 "summarization_cnn_dailymail": {
-                "length_penalty": 0.8,
-                "max_length": 128,
-                "max_position_embeddings": 1024
+                    "length_penalty": 0.8,
+                    "max_length": 128,
+                    "max_position_embeddings": 1024,
                 },
                 "summarization_gigaword": {
-                "length_penalty": 0.6,
-                "max_length": 32,
-                "max_position_embeddings": 128
+                    "length_penalty": 0.6,
+                    "max_length": 32,
+                    "max_position_embeddings": 128,
                 },
                 "summarization_large": {
-                "length_penalty": 0.8,
-                "max_length": 256,
-                "max_position_embeddings": 1024
+                    "length_penalty": 0.8,
+                    "max_length": 256,
+                    "max_position_embeddings": 1024,
                 },
                 "summarization_multi_news": {
-                "length_penalty": 0.8,
-                "max_length": 256,
-                "max_position_embeddings": 1024
+                    "length_penalty": 0.8,
+                    "max_length": 256,
+                    "max_position_embeddings": 1024,
                 },
                 "summarization_newsroom": {
-                "length_penalty": 0.8,
-                "max_length": 128,
-                "max_position_embeddings": 512
+                    "length_penalty": 0.8,
+                    "max_length": 128,
+                    "max_position_embeddings": 512,
                 },
                 "summarization_pubmed": {
-                "length_penalty": 0.8,
-                "max_length": 256,
-                "max_position_embeddings": 1024
+                    "length_penalty": 0.8,
+                    "max_length": 256,
+                    "max_position_embeddings": 1024,
                 },
                 "summarization_reddit_tifu": {
-                "length_penalty": 0.6,
-                "max_length": 128,
-                "max_position_embeddings": 512
+                    "length_penalty": 0.6,
+                    "max_length": 128,
+                    "max_position_embeddings": 512,
                 },
                 "summarization_wikihow": {
-                "length_penalty": 0.6,
-                "max_length": 256,
-                "max_position_embeddings": 512
+                    "length_penalty": 0.6,
+                    "max_length": 256,
+                    "max_position_embeddings": 512,
                 },
                 "summarization_xsum": {
-                "length_penalty": 0.8,
-                "max_length": 64,
-                "max_position_embeddings": 512
-                }
+                    "length_penalty": 0.8,
+                    "max_length": 64,
+                    "max_position_embeddings": 512,
+                },
             },
             "transformers_version": "4.11.0.dev0",
             "use_cache": False,
-            'return_dict': False,
-            "vocab_size": 96103
-            }
+            "return_dict": False,
+            "vocab_size": 96103,
+        }
     else:
         raise ValueError(f"No {model_name} config")
     return config

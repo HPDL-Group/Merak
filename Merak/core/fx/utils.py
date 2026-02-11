@@ -15,58 +15,59 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__all__ = ['_load_cache', '_save_cache', '_split_attr_values']
+__all__ = ["_load_cache", "_save_cache", "_split_attr_values"]
+
+import os
+from typing import Any, Dict, List, Optional, Set, Tuple, Type
 
 import torch
-import os
 import torch.distributed as dist
-
-from torch.nn import Module
 from torch.fx.graph_module import GraphModule
-from typing import Dict, List, Set, Any, Optional, Type, Tuple
+from torch.nn import Module
 
 from Merak.core import mpu
-from Merak.merak_args import MerakArguments
 
 from ..tensor_parallel.mp_attrs import (
     DEFAULT_MP_ATTR,
+    get_tp_attr_list,
     set_tp_layer_lists,
-    get_tp_attr_list
 )
 from ..tensor_parallel.mp_mapping import get_mp_layer_lists
 
 
-def _load_cache(args: MerakArguments) -> Tuple[List[GraphModule], Dict[str, int]]:
+def _load_cache(args: Any) -> Tuple[List[GraphModule], Dict[str, int]]:
     assert args.cache_name is not None
-    if os.path.isfile(f'{args.cache_name}_graph0_cache.pt'):
-        cache_dir = os.path.split(f'{args.cache_name}_graph0_cache.pt')[0]
-        result_len = len([n for n in os.listdir(cache_dir) if 'graph' in n])
+    if os.path.isfile(f"{args.cache_name}_graph0_cache.pt"):
+        cache_dir = os.path.split(f"{args.cache_name}_graph0_cache.pt")[0]
+        result_len = len([n for n in os.listdir(cache_dir) if "graph" in n])
         result = []
         for i in range(result_len):
-            graph_slice = torch.load(f'{args.cache_name}_graph{i}_cache.pt')
+            graph_slice = torch.load(f"{args.cache_name}_graph{i}_cache.pt")
             result.append(graph_slice)
             del graph_slice
-        input_to_shard = torch.load(f'{args.cache_name}_input_cache.pt')
+        input_to_shard = torch.load(f"{args.cache_name}_input_cache.pt")
 
         return result, input_to_shard
 
-def _save_cache(result: List[GraphModule], input_to_shard: Dict[str, int], args: MerakArguments):
+
+def _save_cache(result: List[GraphModule], input_to_shard: Dict[str, int], args: Any):
     if dist.get_rank() == 0:
         file_path = os.path.abspath(os.path.dirname(args.cache_name))
         if not os.path.exists(file_path):
-            os.makedirs(file_path)
+            os.makedirs(file_path, exist_ok=True)
         for idx, graph in enumerate(result):
             # graph.to_folder(f'{args.cache_name}', f'module_{idx}')
-            torch.save(graph, f'{args.cache_name}_graph{idx}_cache.pt')
-        torch.save(input_to_shard, f'{args.cache_name}_input_cache.pt')
+            torch.save(graph, f"{args.cache_name}_graph{idx}_cache.pt")
+        torch.save(input_to_shard, f"{args.cache_name}_input_cache.pt")
         dist.barrier()
     else:
         dist.barrier()
 
-def _split_attr_values(model: Module, gm: GraphModule, merak_args: MerakArguments) -> GraphModule:
-    '''
+
+def _split_attr_values(model: Module, gm: GraphModule, merak_args: Any) -> GraphModule:
+    """
     Replace constant node to real value.
-    '''
+    """
 
     new_graph = torch.fx.Graph()
     new_graph2 = torch.fx.Graph()
@@ -80,7 +81,7 @@ def _split_attr_values(model: Module, gm: GraphModule, merak_args: MerakArgument
     if not mp_attr_list:
         mp_attr_list = DEFAULT_MP_ATTR
 
-    split_attr = {'gpt': 3*merak_args.hidden_size, 'qwen2': 5120}
+    split_attr = {"gpt": 3 * merak_args.hidden_size, "qwen2": 5120}
     # def _set_model_mp_attr(model):
     #     for n, module in model.named_children():
     #         for attr in mp_attr_list:
@@ -115,9 +116,13 @@ def _split_attr_values(model: Module, gm: GraphModule, merak_args: MerakArgument
 
         with new_graph.inserting_after():
             # print(node.target, type(node.target))
-            new_node = new_graph.create_node(op=node.op, args=tuple(new_args),
-                                             kwargs=node.kwargs, name=node.name,
-                                             target=node.target)
+            new_node = new_graph.create_node(
+                op=node.op,
+                args=tuple(new_args),
+                kwargs=node.kwargs,
+                name=node.name,
+                target=node.target,
+            )
             value_remap[node.name] = new_node
 
     for node in new_graph.nodes:
@@ -130,8 +135,10 @@ def _split_attr_values(model: Module, gm: GraphModule, merak_args: MerakArgument
                 new_graph2.lint()
                 break
         except KeyError as e:
-            print(f"The Node {node.name} missing {e}, "
-                  f"the node's args: {node.args}, kwargs: {node.kwargs}")
+            print(
+                f"The Node {node.name} missing {e}, "
+                f"the node's args: {node.args}, kwargs: {node.kwargs}"
+            )
             exit()
 
     gm.graph = new_graph2

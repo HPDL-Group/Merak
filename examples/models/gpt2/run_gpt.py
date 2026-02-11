@@ -15,32 +15,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import Merak
 import torch
-
-from Merak import MerakArguments, MerakTrainer, init_empty_weights
 from config import load_config
-from transformers import (
-    set_seed,
-    HfArgumentParser,
-    GPT2LMHeadModel,
-    GPT2Config,
-)
+from transformers import GPT2Config, GPT2LMHeadModel, HfArgumentParser, set_seed
+
+import Merak
+from Merak import MerakArguments, MerakTrainer, init_empty_weights
 from Merak.utils.datasets import DynamicGenDataset
 
 
 # Add custom command-line arguments
 def parse_option(parser):
-    parser.add_argument('--model_name', type=str, help='Name of the model to load (e.g. gpt2)')
+    parser.add_argument(
+        "--model_name", type=str, help="Name of the model to load (e.g. gpt2)"
+    )
     return parser
 
 
 def main():
     # Initialize Merak distributed training environment
     # pp: pipeline parallelism, tp: tensor parallelism, dp: data parallelism
-    pp = 4
+    pp = 1
     tp = 1
-    dp = 1
+    dp = 4
     Merak.init(pp, tp, dp)
 
     # Parse training and model arguments
@@ -60,9 +57,10 @@ def main():
         model = GPT2LMHeadModel(config)
 
     # Create a fake dataset for training
-    train_dataset = DynamicGenDataset(
-        model.config, mode="text_only", dataset_size=1e6
-    )
+    with training_args.main_process_first():
+        train_dataset = DynamicGenDataset(
+            model.config, mode="text_only", dataset_size=1e6
+        )
 
     # Initialize trainer with model, training arguments and dataset
     trainer = MerakTrainer(

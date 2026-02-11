@@ -17,36 +17,59 @@
 
 # Parts of the code here are adapted from https://gist.github.com/branislav1991/4c143394bdad612883d148e0617bdccd
 
-import torch
-from torch.utils import data
+import json
+import os
+import random
+
 import h5py
 import numpy as np
-import random
-import os
+import torch
+from torch.utils import data
+
 from Merak.core import mpu
-import json
+
 
 def get_data_files(args, seed):
-    files = [os.path.join(args.data_files, f) for f in os.listdir(args.data_files) if
-            os.path.isfile(os.path.join(args.data_files, f)) and 'training' in f]
+    files = [
+        os.path.join(args.data_files, f)
+        for f in os.listdir(args.data_files)
+        if os.path.isfile(os.path.join(args.data_files, f)) and "training" in f
+    ]
     files.sort()
     random.Random(seed).shuffle(files)
 
-    start_idx = int(len(files) / mpu.get_data_parallel_world_size() * mpu.get_data_parallel_rank())
-    end_idx = int(len(files) / mpu.get_data_parallel_world_size() * (mpu.get_data_parallel_rank() + 1))
-    data_file = files[start_idx: end_idx]
+    start_idx = int(
+        len(files) / mpu.get_data_parallel_world_size() * mpu.get_data_parallel_rank()
+    )
+    end_idx = int(
+        len(files)
+        / mpu.get_data_parallel_world_size()
+        * (mpu.get_data_parallel_rank() + 1)
+    )
+    data_file = files[start_idx:end_idx]
 
     return data_file
+
 
 class WorkerInitObj(object):
     def __init__(self, seed):
         self.seed = seed
+
     def __call__(self, id):
         np.random.seed(seed=self.seed + id)
         random.seed(self.seed + id)
 
+
 class HDF5Dataset(data.Dataset):
-    def __init__(self, args, training_args, max_pred_length, json_file="./", data_cache_size=1, transform=None):
+    def __init__(
+        self,
+        args,
+        training_args,
+        max_pred_length,
+        json_file="./",
+        data_cache_size=1,
+        transform=None,
+    ):
         super().__init__()
         self.data_info = []
         self.data_cache = None
@@ -64,37 +87,49 @@ class HDF5Dataset(data.Dataset):
         self.num_workers = training_args.dataloader_num_workers
 
         if len(files) < 1:
-            raise RuntimeError('No hdf5 datasets found')
+            raise RuntimeError("No hdf5 datasets found")
         if not os.path.isfile(json_file) or os.path.getsize(json_file) < 10:
             for h5dataset_fp in files:
                 # print(h5dataset_fp)
                 # self._add_data_infos(str(h5dataset_fp.resolve()), load_data)
                 self._add_data_infos(h5dataset_fp)
-            with open(json_file, 'w', encoding="utf-8") as f:
+            with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(self.data_info, f)
         else:
-            with open(json_file, 'r', encoding="utf-8") as f:
+            with open(json_file, "r", encoding="utf-8") as f:
                 self.data_info = json.loads(f.read())
             self.get_total_samples()
 
-
-            
     def __getitem__(self, index):
         # get data
         worker_id = torch.utils.data.get_worker_info().id
         if self.inputs is None:
-            self.get_data(self.file_idx*self.num_workers+worker_id)
+            self.get_data(self.file_idx * self.num_workers + worker_id)
         try:
             index = next(self.iter_idx)
         except StopIteration:
             self.file_idx += 1
-            self.get_data((self.file_idx*self.num_workers+worker_id)%self.num_files)
+            self.get_data(
+                (self.file_idx * self.num_workers + worker_id) % self.num_files
+            )
             index = next(self.iter_idx)
             # self.count = 0
 
-        [input_ids, input_mask, segment_ids, masked_lm_positions, masked_lm_ids, next_sentence_labels] = [
-            torch.from_numpy(input[index].astype(np.int64)) if indice < 5 else torch.from_numpy(
-                np.asarray(input[index].astype(np.int64))) for indice, input in enumerate(self.inputs)]
+        [
+            input_ids,
+            input_mask,
+            segment_ids,
+            masked_lm_positions,
+            masked_lm_ids,
+            next_sentence_labels,
+        ] = [
+            (
+                torch.from_numpy(input[index].astype(np.int64))
+                if indice < 5
+                else torch.from_numpy(np.asarray(input[index].astype(np.int64)))
+            )
+            for indice, input in enumerate(self.inputs)
+        ]
 
         masked_lm_labels = torch.ones(input_ids.shape, dtype=torch.long) * -1
         index = self.max_pred_length
@@ -104,18 +139,28 @@ class HDF5Dataset(data.Dataset):
             index = padded_mask_indices[0].item()
         masked_lm_labels[masked_lm_positions[:index]] = masked_lm_ids[:index]
 
-        return {"input_ids":input_ids, "attention_mask": input_mask, "token_type_ids": segment_ids, 
-                "masked_lm_labels": masked_lm_labels, "next_sentence_labels": next_sentence_labels}
+        return {
+            "input_ids": input_ids,
+            "attention_mask": input_mask,
+            "token_type_ids": segment_ids,
+            "masked_lm_labels": masked_lm_labels,
+            "next_sentence_labels": next_sentence_labels,
+        }
 
     def __len__(self):
         return self.total_samples
-    
+
     def _add_data_infos(self, file_path):
         with h5py.File(file_path) as h5_file:
             idx = -1
-            self.data_info.append({'file_path': file_path, 'length': len(np.asarray(h5_file["input_ids"][:])), 'cache_idx': idx})
+            self.data_info.append(
+                {
+                    "file_path": file_path,
+                    "length": len(np.asarray(h5_file["input_ids"][:])),
+                    "cache_idx": idx,
+                }
+            )
         self.get_total_samples()
-                
 
     def _load_data(self, file_path):
         """Load data to the cache given the file
@@ -123,19 +168,26 @@ class HDF5Dataset(data.Dataset):
         data_info structure.
         """
         with h5py.File(file_path) as h5_file:
-            keys = ['input_ids', 'input_mask', 'segment_ids', 'masked_lm_positions', 'masked_lm_ids',
-                'next_sentence_labels']
+            keys = [
+                "input_ids",
+                "input_mask",
+                "segment_ids",
+                "masked_lm_positions",
+                "masked_lm_ids",
+                "next_sentence_labels",
+            ]
             inputs = [np.asarray(h5_file[key][:]) for key in keys]
             # add data to the data cache and retrieve
             # the cache index
             idx = self._add_to_cache(inputs, file_path)
 
             # find the beginning index of the hdf5 file we are looking for
-            file_idx = next(i for i,v in enumerate(self.data_info) if v['file_path'] == file_path)
+            file_idx = next(
+                i for i, v in enumerate(self.data_info) if v["file_path"] == file_path
+            )
 
             # the data info should have the same index since we loaded it in the same way
-            self.data_info[file_idx + idx]['cache_idx'] = idx
-
+            self.data_info[file_idx + idx]["cache_idx"] = idx
 
     def _add_to_cache(self, data, file_path):
         """Adds data to the cache and returns its index. There is one cache
@@ -145,28 +197,27 @@ class HDF5Dataset(data.Dataset):
         return 0
 
     def get_data_infos(self):
-        """Get data infos belonging to a certain type of data.
-        """
+        """Get data infos belonging to a certain type of data."""
         data_info_type = [di for di in self.data_info]
         return data_info_type
 
     def get_data(self, i):
         """Call this function anytime you want to access a chunk of data from the
-            dataset. This will make sure that the data is loaded in case it is
-            not part of the data cache.
+        dataset. This will make sure that the data is loaded in case it is
+        not part of the data cache.
         """
-        fp = self.get_data_infos()[i]['file_path']
-        idx = list(range(self.get_data_infos()[i]['length']))
+        fp = self.get_data_infos()[i]["file_path"]
+        idx = list(range(self.get_data_infos()[i]["length"]))
         random.shuffle(idx)
         self.iter_idx = iter(idx)
 
         self._load_data(fp)
         # get new cache_idx assigned by _load_data_info
-        cache_idx = self.get_data_infos()[i]['cache_idx']
+        cache_idx = self.get_data_infos()[i]["cache_idx"]
         self.inputs = self.data_cache
 
     def get_total_samples(self):
         num_sample = []
         for data_info in self.data_info:
-            num_sample.append(data_info['length'])
+            num_sample.append(data_info["length"])
         self.total_samples = sum(num_sample)

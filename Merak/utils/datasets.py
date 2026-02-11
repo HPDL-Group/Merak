@@ -19,22 +19,23 @@ import torch
 from torch.utils.data import Dataset
 
 SUPPORTED_MODES = [
-    "text_only", 
-    "multimodal", 
+    "text_only",
+    "multimodal",
     "vision_only",
     "condition",
     "speech",
     "speech2text",
-    "for_qa"
+    "for_qa",
 ]
 
 MANDATORY_CONFIG_KEYS = [
-    "seq_length", 
-    "max_position_embeddings", 
-    "n_positions", 
+    "seq_length",
+    "max_position_embeddings",
+    "n_positions",
     "embed_dim",
-    "max_target_positions"
+    "max_target_positions",
 ]
+
 
 class DynamicGenDataset(Dataset):
     """
@@ -51,25 +52,25 @@ class DynamicGenDataset(Dataset):
             - "speech2text": Generate data for speech-to-text tasks.
             - "for_qa": Generate data for question answering tasks.
         Default: "text_only".
-        dataset_size (int, optional): Number of virtual samples. 
+        dataset_size (int, optional): Number of virtual samples.
             Controls the __len__ of the dataset. Default: 1000.
-        image_size (int, optional): Size of generated images. 
+        image_size (int, optional): Size of generated images.
             Default: 224.
-        seq_length (int, optional): Sequence length. If not provided, 
+        seq_length (int, optional): Sequence length. If not provided,
             it will be inferred from model_config.
     """
 
     def __init__(
-            self, 
-            model_config, 
-            mode="text_only", 
-            dataset_size=1000,
-            image_size=None,
-            seq_length=None
-        ):
+        self,
+        model_config,
+        mode="text_only",
+        dataset_size=1000,
+        image_size=None,
+        seq_length=None,
+    ):
         super().__init__()
         self._validate_mode(mode)
-        
+
         # Configuration
         self.model_config = model_config
         self.dataset_size = dataset_size
@@ -82,9 +83,10 @@ class DynamicGenDataset(Dataset):
 
         # Validation
         if mode not in SUPPORTED_MODES:
-            raise ValueError(f"Unsupported mode: {mode}. "
-                             f"Supported modes: {SUPPORTED_MODES}")
-    
+            raise ValueError(
+                f"Unsupported mode: {mode}. " f"Supported modes: {SUPPORTED_MODES}"
+            )
+
     def _infer_sequence_length(self, model_config):
         """Infer sequence length from model configurations."""
         if self.seq_length is not None:
@@ -95,14 +97,17 @@ class DynamicGenDataset(Dataset):
                 self.seq_length = getattr(model_config, key)
                 break
         if self.mode != "vision_only" and self.seq_length is None:
-            raise ValueError("Sequence length could not be inferred and is required"
-                            " for non-vision only modes.")
+            raise ValueError(
+                "Sequence length could not be inferred and is required"
+                " for non-vision only modes."
+            )
 
     def _validate_mode(self, mode):
         """Validate the mode argument."""
         if mode not in SUPPORTED_MODES:
-            raise ValueError(f"Mode '{mode}' is not supported. "
-                            f"Options: {SUPPORTED_MODES}")
+            raise ValueError(
+                f"Mode '{mode}' is not supported. " f"Options: {SUPPORTED_MODES}"
+            )
 
     def _validate_sequence_length(self):
         """Validate sequence length after inference."""
@@ -144,74 +149,65 @@ class DynamicGenDataset(Dataset):
         """Generate text data sample."""
         input_ids = torch.randint(1, 1000, (self.sequence_length,))
         labels = torch.randint(1, 1000, (self.sequence_length,))
-        return {
-            'input_ids': input_ids,
-            'labels': labels
-        }
+        return {"input_ids": input_ids, "labels": labels}
 
     def _generate_multimodal_data(self):
         """Generate multimodal data sample."""
         input_ids = torch.randint(1, 64, (self.sequence_length,))
         pixel_values = torch.randn(3, self.image_size, self.image_size)
-        return {
-            'input_ids': input_ids,
-            'pixel_values': pixel_values
-        }
+        return {"input_ids": input_ids, "pixel_values": pixel_values}
 
     def _generate_vision_data(self):
         """Generate vision-only data sample."""
         pixel_values = torch.randn(3, self.image_size, self.image_size)
         labels = torch.randint(0, self.num_labels, (1,))
-        return {
-            'pixel_values': pixel_values,
-            'labels': labels
-        }
+        return {"pixel_values": pixel_values, "labels": labels}
 
     def _generate_condition_data(self):
         """Generate condition data."""
-        input_ids = torch.randint(
-            1, 1000, (self.sequence_length,)
-        ).long()
-        decoder_input_ids = torch.randint(
-            1, 1000, (self.sequence_length,)
-        ).long()
+        input_ids = torch.randint(1, 1000, (self.sequence_length,)).long()
+        decoder_input_ids = torch.randint(1, 1000, (self.sequence_length,)).long()
         labels = torch.randint(1, 1000, (self.sequence_length,)).long()
         return {
-            'input_ids': input_ids,
-            'decoder_input_ids': decoder_input_ids,
-            'labels': labels
+            "input_ids": input_ids,
+            "decoder_input_ids": decoder_input_ids,
+            "labels": labels,
         }
 
     def _generate_speech_data(self):
         """Generate speech data."""
         input_values = torch.randn((self.sequence_length,))
-        labels = torch.randint(1, self.model_config.vocab_size, (self.sequence_length,)).long()
-        return {
-            'input_values': input_values,
-            'labels': labels
-        }
+        labels = torch.randint(
+            1, self.model_config.vocab_size, (self.sequence_length,)
+        ).long()
+        return {"input_values": input_values, "labels": labels}
 
     def _generate_speech_to_text_data(self):
         """Generate data for speech-to-text tasks."""
-        input_features = torch.randn([self.sequence_length,
-                                     self.model_config.input_feat_per_channel])
+        input_features = torch.randn(
+            [self.sequence_length, self.model_config.input_feat_per_channel]
+        )
         decoder_input_ids = torch.randint(1, 1000, (self.sequence_length,)).long()
         labels = torch.randint(1, 1000, (self.sequence_length,)).long()
         return {
-            'input_features': input_features,
-            'decoder_input_ids': decoder_input_ids,
-            'labels': labels
+            "input_features": input_features,
+            "decoder_input_ids": decoder_input_ids,
+            "labels": labels,
         }
 
     def _generate_qa_data(self):
         """Generate data for question answering."""
         input_ids = torch.randint(1, 1000, (self.sequence_length,)).long()
-        visual_feats = torch.randn([self.sequence_length, self.model_config.visual_feat_dim])
-        visual_pos = torch.randn([self.sequence_length, self.model_config.visual_pos_dim])
+        visual_feats = torch.randn(
+            [self.sequence_length, self.model_config.visual_feat_dim]
+        )
+        visual_pos = torch.randn(
+            [self.sequence_length, self.model_config.visual_pos_dim]
+        )
         labels = torch.randint(0, 1, (1,)).long()
         return {
-            'input_ids': input_ids,
-            'visual_feats': visual_feats,
-            'visual_pos': visual_pos,
-            'labels': labels
+            "input_ids": input_ids,
+            "visual_feats": visual_feats,
+            "visual_pos": visual_pos,
+            "labels": labels,
         }

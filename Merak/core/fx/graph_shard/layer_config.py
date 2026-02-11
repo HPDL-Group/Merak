@@ -17,24 +17,22 @@
 
 # Parts of the code here are adapted from https://github.com/SymbioticLab/Oobleck/blob/sosp23-artifact/oobleck/module/sharding.py
 
-import torch
-import torch.fx
-import torch.distributed as dist
 import warnings
-
-from itertools import chain
-from torch.fx.node import Node
 from collections import defaultdict
-from transformers import PretrainedConfig
-from torch.fx.graph_module import GraphModule
-from typing import Dict, List, Set, Any, Optional, Type, Tuple
+from itertools import chain
+from typing import Any, Dict, List, Optional, Set, Tuple, Type
 
-from Merak.merak_args import get_args
+import torch
+import torch.distributed as dist
+import torch.fx
+from torch.fx.graph_module import GraphModule
+from torch.fx.node import Node
+from transformers import PretrainedConfig
+
 from .split_module import split_module
 
 
-def get_split_points(config: Type[PretrainedConfig]) -> List[str]:
-    args = get_args()
+def get_split_points(config: Type[PretrainedConfig], args) -> List[str]:
     split_points = []
 
     if args.custom_split_points is not None:
@@ -184,9 +182,8 @@ def get_split_points(config: Type[PretrainedConfig]) -> List[str]:
 
 
 def layer_config_mapping(
-        traced: torch.fx.GraphModule,
-        split_points: List[str]
-    ) -> Tuple[Dict[str, int], Dict[int, List[str]], Dict[str, int]]:
+    traced: torch.fx.GraphModule, split_points: List[str]
+) -> Tuple[Dict[str, int], Dict[int, List[str]], Dict[str, int]]:
     """Analyze the given traced module and split it to subgraphs.
     While partitioning, it also finds additioanl required inputs and outputs
     so that they are added.
@@ -223,9 +220,7 @@ def layer_config_mapping(
             nodes_so_far.append(node.name)
             shard_id_to_node[shard_id].append(node)
 
-            point = next(
-                filter(lambda p: p in node.next.name, split_points), None
-            )
+            point = next(filter(lambda p: p in node.next.name, split_points), None)
             if point:
                 # Record outputs that should be used later, so that it can be added
                 # in return of this shard
@@ -252,16 +247,19 @@ def layer_config_mapping(
 
     return node_name_to_shard_id, extra_output, func_inputs, shard_output
 
+
 def layer_config_split(
-        traced_graph_module: GraphModule,
-        model: torch.nn.Module
-    ) -> Tuple[List[GraphModule], Dict[str, int]]:
-    # mapping node name to shard id 
-    split_points = get_split_points(model.config)
+    traced_graph_module: GraphModule, model: torch.nn.Module, args
+) -> Tuple[List[GraphModule], Dict[str, int]]:
+    # mapping node name to shard id
+    split_points = get_split_points(model.config, args)
     split_points = [p.replace(".", "_") for p in split_points]
-    node_name_to_shard_id, extra_output, func_inputs, shard_output = \
+    node_name_to_shard_id, extra_output, func_inputs, shard_output = (
         layer_config_mapping(traced_graph_module, split_points)
-    
+    )
+
     # split graph
-    module_list, func_inputs, _ = split_module(traced_graph_module, model, node_name_to_shard_id)
+    module_list, func_inputs, _ = split_module(
+        args, traced_graph_module, model, node_name_to_shard_id
+    )
     return module_list, func_inputs

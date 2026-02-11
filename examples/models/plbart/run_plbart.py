@@ -16,21 +16,18 @@
 # limitations under the License.
 
 import torch
-import Merak
+from transformers import HfArgumentParser, PLBartConfig, PLBartForCausalLM, set_seed
 
+import Merak
 from Merak import MerakArguments, MerakTrainer, init_empty_weights
-from transformers import (
-    set_seed,
-    PLBartForCausalLM,
-    PLBartConfig,
-    HfArgumentParser,
-)
 from Merak.utils.datasets import DynamicGenDataset
 
 
 # Add custom command-line arguments
 def parse_option(parser):
-    parser.add_argument('--model_name', type=str, help='Name of the model to load (e.g. gpt2)')
+    parser.add_argument(
+        "--model_name", type=str, help="Name of the model to load (e.g. gpt2)"
+    )
     return parser
 
 
@@ -41,7 +38,7 @@ def main():
     tp = 1
     dp = 1
     Merak.init(pp, tp, dp)
-    
+
     # merge args
     hfparser = HfArgumentParser(MerakArguments)
     parser = parse_option(hfparser)
@@ -50,23 +47,23 @@ def main():
     if tp > 1:
         from Merak.core.tensor_parallel.mp_attrs import set_tp_layer_lists
 
-        col_para_list = ['q_proj', 'k_proj', 'v_proj', 'fc1']
-        row_para_list = ['out_proj', 'fc2']
-        tp_attr_list = ['num_heads']
+        col_para_list = ["q_proj", "k_proj", "v_proj", "fc1"]
+        row_para_list = ["out_proj", "fc2"]
+        tp_attr_list = ["num_heads"]
 
         # manully set tp attribute for swin model
-        set_tp_layer_lists(col_para_list=col_para_list, row_para_list=row_para_list, 
-                           tp_attr_list=tp_attr_list)
+        set_tp_layer_lists(
+            col_para_list=col_para_list,
+            row_para_list=row_para_list,
+            tp_attr_list=tp_attr_list,
+        )
 
     # Set seed before initializing model.
     set_seed(training_args.seed)
 
     # set model config
     # config_kwarg = load_config(args.model_name)
-    config_kwarg = {
-        'return_dict': False,
-        'use_cache': False
-    }
+    config_kwarg = {"return_dict": False, "use_cache": False}
     config = PLBartConfig(**config_kwarg)
 
     # meta init
@@ -74,22 +71,20 @@ def main():
         model = PLBartForCausalLM(config)
 
     split_point = []
-    split_point.append('model.decoder.embed_positions')
+    split_point.append("model.decoder.embed_positions")
     for i in range(model.config.decoder_layers):
-        split_point.append(f'model.decoder.layers.{i}')
-    split_point.append('lm_head')
+        split_point.append(f"model.decoder.layers.{i}")
+    split_point.append("lm_head")
     training_args.custom_split_points = split_point
 
     # Create a fake dataset for training
-    train_dataset = DynamicGenDataset(
-        model.config, mode="text_only", dataset_size=1e6
-    )
+    train_dataset = DynamicGenDataset(model.config, mode="text_only", dataset_size=1e6)
 
-    # using our distributed trainer        
+    # using our distributed trainer
     trainer = MerakTrainer(
         model=model,
         args=training_args,
-        train_dataset=train_dataset, 
+        train_dataset=train_dataset,
     )
 
     # Training

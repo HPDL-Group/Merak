@@ -15,15 +15,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Parts of the code here are adapted from https://github.com/huggingface/peft/blob/main/src/peft/tuners/lora/config.py
+# Parts of the code here are adapted from
+# https://github.com/huggingface/peft/blob/main/src/peft/tuners/lora/config.py
 
-from transformers import PretrainedConfig
+import enum
 from dataclasses import dataclass, field
 from typing import List, Optional, Union
-import enum
+
+from transformers import PretrainedConfig
+
 from .mappings import TRANSFORMERS_MODELS_TO_LORA_TARGET_MODULES_MAPPING
 
+
 class PeftType(str, enum.Enum):
+    """Type of peft type"""
+
     PROMPT_TUNING = "PROMPT_TUNING"
     MULTITASK_PROMPT_TUNING = "MULTITASK_PROMPT_TUNING"
     P_TUNING = "P_TUNING"
@@ -36,12 +42,15 @@ class PeftType(str, enum.Enum):
 
 
 class TaskType(str, enum.Enum):
+    """Type of peft task"""
+
     SEQ_CLS = "SEQ_CLS"
     SEQ_2_SEQ_LM = "SEQ_2_SEQ_LM"
     CAUSAL_LM = "CAUSAL_LM"
     TOKEN_CLS = "TOKEN_CLS"
     QUESTION_ANS = "QUESTION_ANS"
     FEATURE_EXTRACTION = "FEATURE_EXTRACTION"
+
 
 @dataclass
 class PeftConfig:
@@ -58,10 +67,19 @@ class PeftConfig:
     # base_model_name_or_path: str = field(
     #    default=None, metadata={"help": "The name of the base model to use."}
     # )
-    revision: str = field(default=None, metadata={"help": "The specific model version to use."})
-    peft_type: Union[str, PeftType] = field(default=None, metadata={"help": "Peft type"})
-    task_type: Union[str, TaskType] = field(default=None, metadata={"help": "Task type"})
-    inference_mode: bool = field(default=False, metadata={"help": "Whether to use inference mode"})
+    revision: str = field(
+        default=None, metadata={"help": "The specific model version to use."}
+    )
+    peft_type: Union[str, PeftType] = field(
+        default=None, metadata={"help": "Peft type"}
+    )
+    task_type: Union[str, TaskType] = field(
+        default=None, metadata={"help": "Task type"}
+    )
+    inference_mode: bool = field(
+        default=False, metadata={"help": "Whether to use inference mode"}
+    )
+
 
 @dataclass
 class LoraConfig(PeftConfig):
@@ -105,7 +123,7 @@ class LoraConfig(PeftConfig):
         default=None,
         metadata={
             "help": "List of module names or regex expression of the module names to "
-                    "replace with Lora."
+            "replace with Lora."
             "For example, ['q', 'v'] or '.*decoder.*(SelfAttention|EncDecAttention).*(q|v)$' "
         },
     )
@@ -117,9 +135,9 @@ class LoraConfig(PeftConfig):
             "help": "Set this to True if the layer to replace stores weight like (fan_in, fan_out)"
         },
     )
-    bias: str = field(default="none", metadata={
-        "help": "Bias type for Lora. Can be 'none', 'all' or 'lora_only'"
-        },
+    bias: str = field(
+        default="none",
+        metadata={"help": "Bias type for Lora. Can be 'none', 'all' or 'lora_only'"},
     )
     modules_to_save: Optional[List[str]] = field(
         default=None,
@@ -180,13 +198,19 @@ class LoraConfig(PeftConfig):
         self.peft_type = PeftType.LORA
         self.target_modules = (
             set(self.target_modules)
-            if isinstance(self.target_modules, list) else self.target_modules
+            if isinstance(self.target_modules, list)
+            else self.target_modules
         )
 
 
-def _prepare_lora_config(peft_config: LoraConfig, model_config: PretrainedConfig) -> LoraConfig:
+def _prepare_lora_config(
+    peft_config: LoraConfig, model_config: PretrainedConfig
+) -> LoraConfig:
     if peft_config.target_modules is None:
-        if model_config["model_type"] not in TRANSFORMERS_MODELS_TO_LORA_TARGET_MODULES_MAPPING:
+        if (
+            model_config["model_type"]
+            not in TRANSFORMERS_MODELS_TO_LORA_TARGET_MODULES_MAPPING
+        ):
             raise ValueError("Please specify `target_modules` in `peft_config`")
         peft_config.target_modules = TRANSFORMERS_MODELS_TO_LORA_TARGET_MODULES_MAPPING[
             model_config["model_type"]

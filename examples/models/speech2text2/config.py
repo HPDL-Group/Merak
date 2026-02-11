@@ -1,28 +1,21 @@
 def load_config(model_name):
     if model_name == "s2t-wav2vec2-large-en-de":
         config = {
-            "architectures": [
-                "SpeechEncoderDecoderModel"
-            ],
+            "architectures": ["SpeechEncoderDecoderModel"],
             "bos_token_id": 0,
             "decoder": {
                 "_name_or_path": "",
                 "activation_dropout": 0.1,
                 "activation_function": "relu",
                 "add_cross_attention": True,
-                "architectures": [
-                "Speech2TextForConditionalGeneration"
-                ],
+                "architectures": ["Speech2TextForConditionalGeneration"],
                 "attention_dropout": 0.1,
                 "bad_words_ids": None,
                 "bos_token_id": 0,
                 "chunk_size_feed_forward": 0,
                 "classifier_dropout": 0.0,
                 "conv_channels": 1024,
-                "conv_kernel_sizes": [
-                5,
-                5
-                ],
+                "conv_kernel_sizes": [5, 5],
                 "d_model": 256,
                 "decoder_attention_heads": 4,
                 "decoder_ffn_dim": 2048,
@@ -43,19 +36,13 @@ def load_config(model_name):
                 "forced_bos_token_id": None,
                 "forced_eos_token_id": None,
                 "gradient_checkpointing": False,
-                "id2label": {
-                "0": "LABEL_0",
-                "1": "LABEL_1"
-                },
+                "id2label": {"0": "LABEL_0", "1": "LABEL_1"},
                 "init_std": 0.02,
                 "input_channels": 1,
                 "input_feat_per_channel": 80,
                 "is_decoder": True,
                 "is_encoder_decoder": True,
-                "label2id": {
-                "LABEL_0": 0,
-                "LABEL_1": 1
-                },
+                "label2id": {"LABEL_0": 0, "LABEL_1": 1},
                 "length_penalty": 1.0,
                 "max_length": 200,
                 "max_source_positions": 6000,
@@ -93,17 +80,15 @@ def load_config(model_name):
                 "transformers_version": "4.10.0.dev0",
                 "use_bfloat16": False,
                 "use_cache": False,
-                'return_dict': False,
-                "vocab_size": 10224
+                "return_dict": False,
+                "vocab_size": 10224,
             },
             "encoder": {
                 "_name_or_path": "",
                 "activation_dropout": 0.1,
                 "add_cross_attention": False,
                 "apply_spec_augment": True,
-                "architectures": [
-                "Wav2Vec2ForPreTraining"
-                ],
+                "architectures": ["Wav2Vec2ForPreTraining"],
                 "attention_dropout": 0.1,
                 "bad_words_ids": None,
                 "bos_token_id": 1,
@@ -111,33 +96,9 @@ def load_config(model_name):
                 "codevector_dim": 768,
                 "contrastive_logits_temperature": 0.1,
                 "conv_bias": True,
-                "conv_dim": [
-                512,
-                512,
-                512,
-                512,
-                512,
-                512,
-                512
-                ],
-                "conv_kernel": [
-                10,
-                3,
-                3,
-                3,
-                3,
-                2,
-                2
-                ],
-                "conv_stride": [
-                5,
-                2,
-                2,
-                2,
-                2,
-                2,
-                2
-                ],
+                "conv_dim": [512, 512, 512, 512, 512, 512, 512],
+                "conv_kernel": [10, 3, 3, 3, 3, 2, 2],
+                "conv_stride": [5, 2, 2, 2, 2, 2, 2],
                 "ctc_loss_reduction": "sum",
                 "ctc_zero_infinity": False,
                 "decoder_start_token_id": None,
@@ -162,18 +123,12 @@ def load_config(model_name):
                 "hidden_dropout": 0.1,
                 "hidden_dropout_prob": 0.1,
                 "hidden_size": 1024,
-                "id2label": {
-                "0": "LABEL_0",
-                "1": "LABEL_1"
-                },
+                "id2label": {"0": "LABEL_0", "1": "LABEL_1"},
                 "initializer_range": 0.02,
                 "intermediate_size": 4096,
                 "is_decoder": False,
                 "is_encoder_decoder": False,
-                "label2id": {
-                "LABEL_0": 0,
-                "LABEL_1": 1
-                },
+                "label2id": {"LABEL_0": 0, "LABEL_1": 1},
                 "layer_norm_eps": 1e-05,
                 "layerdrop": 0.1,
                 "length_penalty": 1.0,
@@ -220,7 +175,7 @@ def load_config(model_name):
                 "torchscript": False,
                 "transformers_version": "4.10.0.dev0",
                 "use_bfloat16": False,
-                "vocab_size": 32
+                "vocab_size": 32,
             },
             "eos_token_id": 2,
             "feature_extractor_type": "wav2vec2",
@@ -232,8 +187,8 @@ def load_config(model_name):
             "torch_dtype": "float32",
             "transformers_version": None,
             "num_beams": 5,
-            "max_length": 200
-            }
+            "max_length": 200,
+        }
     else:
         raise ValueError(f"No {model_name} config")
     return config

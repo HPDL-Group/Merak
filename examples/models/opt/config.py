@@ -4,9 +4,7 @@ def load_config(model_name):
             "_name_or_path": "opt-350m",
             "activation_dropout": 0.0,
             "activation_function": "relu",
-            "architectures": [
-                "OPTForCausalLM"
-            ],
+            "architectures": ["OPTForCausalLM"],
             "attention_dropout": 0.0,
             "bos_token_id": 2,
             "do_layer_norm_before": False,
@@ -25,10 +23,10 @@ def load_config(model_name):
             "torch_dtype": "float16",
             "transformers_version": "4.20.0.dev0",
             "use_cache": False,
-            'return_dict': False,
+            "return_dict": False,
             "vocab_size": 50272,
-            "word_embed_proj_dim": 512
-            }
+            "word_embed_proj_dim": 512,
+        }
     else:
         raise ValueError(f"No {model_name} config")
     return config

@@ -1,9 +1,7 @@
 def load_config(model_name):
     if model_name == "dinov2-base":
         config = {
-            "architectures": [
-                "Dinov2Model"
-            ],
+            "architectures": ["Dinov2Model"],
             "attention_probs_dropout_prob": 0.0,
             "drop_path_rate": 0.0,
             "hidden_act": "gelu",
@@ -22,10 +20,10 @@ def load_config(model_name):
             "qkv_bias": True,
             "torch_dtype": "float32",
             "transformers_version": "4.31.0.dev0",
-            'return_dict': False,
+            "return_dict": False,
             "use_cache": True,
-            "use_swiglu_ffn": False
-            }
+            "use_swiglu_ffn": False,
+        }
     else:
         raise ValueError(f"No {model_name} config")
     return config

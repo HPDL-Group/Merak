@@ -16,22 +16,19 @@
 # limitations under the License.
 
 import torch
-import Merak
-
-from Merak import MerakArguments, MerakTrainer, init_empty_weights
-
+from transformers import HfArgumentParser, SwinConfig, SwinForImageClassification, set_seed
 from transformers.models.swin.modeling_swin import SwinDropPath
-from transformers import (
-    set_seed,
-    SwinForImageClassification,
-    SwinConfig,
-    HfArgumentParser,
-)
+
+import Merak
+from Merak import MerakArguments, MerakTrainer, init_empty_weights
 from Merak.utils.datasets import DynamicGenDataset
+
 
 # Add custom command-line arguments
 def parse_option(parser):
-    parser.add_argument('--model_name', type=str, help='Name of the model to load (e.g. gpt2)')
+    parser.add_argument(
+        "--model_name", type=str, help="Name of the model to load (e.g. gpt2)"
+    )
     return parser
 
 
@@ -42,7 +39,7 @@ def main():
     tp = 1
     dp = 1
     Merak.init(pp, tp, dp)
-    
+
     # merege args
     hfparser = HfArgumentParser(MerakArguments)
     parser = parse_option(hfparser)
@@ -51,14 +48,18 @@ def main():
     if tp > 1:
         from Merak.core.tensor_parallel.mp_attrs import set_tp_layer_lists
 
-        col_para_list = ['query', 'key', 'value', 'intermediate.dense']
-        row_para_list = ['output.dense']
-        weight_change_list = [('relative_position_bias_table', 1)]
-        tp_attr_list = ['num_attention_heads']
+        col_para_list = ["query", "key", "value", "intermediate.dense"]
+        row_para_list = ["output.dense"]
+        weight_change_list = [("relative_position_bias_table", 1)]
+        tp_attr_list = ["num_attention_heads"]
 
         # manully set tp attribute for swin model
-        set_tp_layer_lists(col_para_list=col_para_list, row_para_list=row_para_list, 
-            weight_change_list=weight_change_list, tp_attr_list=tp_attr_list)
+        set_tp_layer_lists(
+            col_para_list=col_para_list,
+            row_para_list=row_para_list,
+            weight_change_list=weight_change_list,
+            tp_attr_list=tp_attr_list,
+        )
 
     # Set seed before initializing model.
     set_seed(training_args.seed)
@@ -78,7 +79,6 @@ def main():
         model.config, mode="vision_only", dataset_size=1e6
     )
 
-
     class MyTrainer(MerakTrainer):
         # define custom loss function
         def get_loss_fn(self):
@@ -90,7 +90,9 @@ def main():
                 if model.config.problem_type is None:
                     if model.config.num_labels == 1:
                         model.config.problem_type = "regression"
-                    elif model.config.num_labels > 1 and (labels.dtype == torch.long or labels.dtype == torch.int):
+                    elif model.config.num_labels > 1 and (
+                        labels.dtype == torch.long or labels.dtype == torch.int
+                    ):
                         model.config.problem_type = "single_label_classification"
                     else:
                         model.config.problem_type = "multi_label_classification"
@@ -102,20 +104,22 @@ def main():
                         loss = loss_fct(outputs, labels)
                 elif model.config.problem_type == "single_label_classification":
                     loss_fct = torch.nn.CrossEntropyLoss()
-                    loss = loss_fct(outputs.view(-1, model.config.num_labels), labels.view(-1))
+                    loss = loss_fct(
+                        outputs.view(-1, model.config.num_labels), labels.view(-1)
+                    )
                 elif model.config.problem_type == "multi_label_classification":
                     loss_fct = torch.nn.BCEWithLogitsLoss()
-                    loss = loss_fct(outputs, labels) 
+                    loss = loss_fct(outputs, labels)
                 return loss
+
             return loss_fn
 
-
-    # using our distributed trainer        
+    # using our distributed trainer
     trainer = MyTrainer(
         model=model,
         args=training_args,
-        train_dataset=train_dataset, 
-        leaf_modules=(SwinDropPath,)
+        train_dataset=train_dataset,
+        leaf_modules=(SwinDropPath,),
     )
 
     # Training

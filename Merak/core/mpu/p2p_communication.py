@@ -17,22 +17,24 @@
 
 # Parts of the code here are adapted from https://github.com/NVIDIA/Megatron-LM/blob/806422e5ec35c27b027dbb413b05e27b6590dc56/megatron/p2p_communication.py
 
-from functools import reduce
 import operator
-import torch
+from functools import reduce
 from typing import Optional
+
+import torch
+
 from .. import mpu
 
 
 def _communicate(
-        tensor_send_next: torch.Tensor,
-        tensor_send_prev: torch.Tensor,
-        recv_prev: bool,
-        recv_next: bool,
-        use_ring_exchange: bool = False,
-        recv_next_buffer: Optional[torch.Tensor] = None,
-        recv_prev_buffer: Optional[torch.Tensor] = None
-    ):
+    tensor_send_next: torch.Tensor,
+    tensor_send_prev: torch.Tensor,
+    recv_prev: bool,
+    recv_next: bool,
+    use_ring_exchange: bool = False,
+    recv_next_buffer: Optional[torch.Tensor] = None,
+    recv_prev_buffer: Optional[torch.Tensor] = None,
+):
     """Communicate tensors between stages. Used as helper method in other
     communication methods that are used in megatron/schedules.py.
 
@@ -51,10 +53,10 @@ def _communicate(
     tensor_recv_prev = None
     tensor_recv_next = None
     if recv_prev:
-        assert recv_prev_buffer is not None, 'recv_prev_buffer is None'
+        assert recv_prev_buffer is not None, "recv_prev_buffer is None"
         tensor_recv_prev = recv_prev_buffer
     if recv_next:
-        assert recv_next_buffer is not None, 'recv_next_buffer is None'
+        assert recv_next_buffer is not None, "recv_next_buffer is None"
         tensor_recv_next = recv_next_buffer
 
     # Send tensors in both the forward and backward directions as appropriate.
@@ -64,32 +66,36 @@ def _communicate(
             tensor_recv_prev=tensor_recv_prev,
             tensor_send_next=tensor_send_next,
             tensor_recv_next=tensor_recv_next,
-            group=mpu.get_pipe_parallel_group()
+            group=mpu.get_pipe_parallel_group(),
         )
     else:
         ops = []
         if tensor_send_prev is not None:
             send_prev_op = torch.distributed.P2POp(
-                torch.distributed.isend, tensor_send_prev,
-                mpu.get_pipeline_model_parallel_prev_rank()
+                torch.distributed.isend,
+                tensor_send_prev,
+                mpu.get_pipeline_model_parallel_prev_rank(),
             )
             ops.append(send_prev_op)
         if tensor_recv_prev is not None:
             recv_prev_op = torch.distributed.P2POp(
-                torch.distributed.irecv, tensor_recv_prev,
-                mpu.get_pipeline_model_parallel_prev_rank()
+                torch.distributed.irecv,
+                tensor_recv_prev,
+                mpu.get_pipeline_model_parallel_prev_rank(),
             )
             ops.append(recv_prev_op)
         if tensor_send_next is not None:
             send_next_op = torch.distributed.P2POp(
-                torch.distributed.isend, tensor_send_next,
-                mpu.get_pipeline_model_parallel_next_rank()
+                torch.distributed.isend,
+                tensor_send_next,
+                mpu.get_pipeline_model_parallel_next_rank(),
             )
             ops.append(send_next_op)
         if tensor_recv_next is not None:
             recv_next_op = torch.distributed.P2POp(
-                torch.distributed.irecv, tensor_recv_next,
-                mpu.get_pipeline_model_parallel_next_rank()
+                torch.distributed.irecv,
+                tensor_recv_next,
+                mpu.get_pipeline_model_parallel_next_rank(),
             )
             ops.append(recv_next_op)
         if len(ops) > 0:
@@ -99,8 +105,6 @@ def _communicate(
     # To protect against race condition when using batch_isend_irecv().
     if torch.cuda.is_available():
         torch.cuda.synchronize()
-
-
 
 
 def recv_forward(buffer: torch.Tensor):
@@ -113,7 +117,8 @@ def recv_forward(buffer: torch.Tensor):
             tensor_send_prev=None,
             recv_prev=True,
             recv_next=False,
-            recv_prev_buffer=buffer)
+            recv_prev_buffer=buffer,
+        )
 
 
 def recv_backward(buffer: torch.Tensor):
@@ -126,7 +131,8 @@ def recv_backward(buffer: torch.Tensor):
             tensor_send_prev=None,
             recv_prev=False,
             recv_next=True,
-            recv_next_buffer=buffer)
+            recv_next_buffer=buffer,
+        )
 
 
 def send_forward(output_tensor: torch.Tensor):
@@ -136,7 +142,8 @@ def send_forward(output_tensor: torch.Tensor):
             tensor_send_next=output_tensor,
             tensor_send_prev=None,
             recv_prev=False,
-            recv_next=False)
+            recv_next=False,
+        )
 
 
 def send_backward(input_tensor_grad: torch.Tensor):
@@ -146,10 +153,13 @@ def send_backward(input_tensor_grad: torch.Tensor):
             tensor_send_next=None,
             tensor_send_prev=input_tensor_grad,
             recv_prev=False,
-            recv_next=False)
+            recv_next=False,
+        )
 
 
-def send_forward_recv_backward(output_tensor: torch.Tensor, recv_next_buffer: torch.Tensor):
+def send_forward_recv_backward(
+    output_tensor: torch.Tensor, recv_next_buffer: torch.Tensor
+):
     """Batched send and recv with next rank in pipeline."""
     if mpu.is_pipeline_last_stage():
         recv_next_buffer = None
@@ -158,10 +168,14 @@ def send_forward_recv_backward(output_tensor: torch.Tensor, recv_next_buffer: to
             tensor_send_next=output_tensor,
             tensor_send_prev=None,
             recv_prev=False,
-            recv_next=True, 
-            recv_next_buffer=recv_next_buffer)
+            recv_next=True,
+            recv_next_buffer=recv_next_buffer,
+        )
 
-def send_backward_recv_forward(input_tensor_grad: torch.Tensor, recv_prev_buffer: torch.Tensor):
+
+def send_backward_recv_forward(
+    input_tensor_grad: torch.Tensor, recv_prev_buffer: torch.Tensor
+):
     """Batched send and recv with previous rank in pipeline."""
     if mpu.is_pipeline_first_stage():
         recv_prev_buffer = None
@@ -170,48 +184,55 @@ def send_backward_recv_forward(input_tensor_grad: torch.Tensor, recv_prev_buffer
             tensor_send_next=None,
             tensor_send_prev=input_tensor_grad,
             recv_prev=True,
-            recv_next=False, 
-            recv_prev_buffer=recv_prev_buffer)
-
+            recv_next=False,
+            recv_prev_buffer=recv_prev_buffer,
+        )
 
 
 def send_forward_recv_forward(
-        output_tensor: torch.Tensor,
-        recv_prev: bool,
-        recv_prev_buffer: Optional[torch.Tensor] = None
-    ):
+    output_tensor: torch.Tensor,
+    recv_prev: bool,
+    recv_prev_buffer: Optional[torch.Tensor] = None,
+):
     """Batched recv from previous rank and send to next rank in pipeline."""
     _communicate(
         tensor_send_next=output_tensor,
         tensor_send_prev=None,
         recv_prev=recv_prev,
-        recv_next=False, 
-        recv_prev_buffer=recv_prev_buffer)
+        recv_next=False,
+        recv_prev_buffer=recv_prev_buffer,
+    )
+
 
 def send_backward_recv_backward(
-        input_tensor_grad: torch.Tensor,
-        recv_next: bool,
-        recv_next_buffer: Optional[torch.Tensor] = None):
+    input_tensor_grad: torch.Tensor,
+    recv_next: bool,
+    recv_next_buffer: Optional[torch.Tensor] = None,
+):
     """Batched recv from next rank and send to previous rank in pipeline."""
     _communicate(
         tensor_send_next=None,
         tensor_send_prev=input_tensor_grad,
         recv_prev=False,
-        recv_next=recv_next, 
-        recv_next_buffer=recv_next_buffer)
+        recv_next=recv_next,
+        recv_next_buffer=recv_next_buffer,
+    )
+
 
 def send_forward_backward_recv_forward_backward(
-        output_tensor: torch.Tensor,
-        input_tensor_grad: torch.Tensor,
-        recv_prev: bool,
-        recv_next: bool,
-        recv_prev_buffer: Optional[torch.Tensor] = None,
-        recv_next_buffer: Optional[torch.Tensor] = None):
+    output_tensor: torch.Tensor,
+    input_tensor_grad: torch.Tensor,
+    recv_prev: bool,
+    recv_next: bool,
+    recv_prev_buffer: Optional[torch.Tensor] = None,
+    recv_next_buffer: Optional[torch.Tensor] = None,
+):
     """Batched send and recv with previous and next ranks in pipeline."""
     _communicate(
         tensor_send_next=output_tensor,
         tensor_send_prev=input_tensor_grad,
         recv_prev=recv_prev,
-        recv_next=recv_next, 
-        recv_prev_buffer=recv_prev_buffer, 
-        recv_next_buffer=recv_next_buffer)
+        recv_next=recv_next,
+        recv_prev_buffer=recv_prev_buffer,
+        recv_next_buffer=recv_next_buffer,
+    )

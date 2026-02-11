@@ -16,25 +16,27 @@
 # limitations under the License.
 
 import torch
-import Merak
-
-from Merak import MerakArguments, MerakTrainer, init_empty_weights
-from transformers.models.segformer.modeling_segformer import drop_path, SegformerDropPath
 # from transformers.models.segformer.modeling_segformer import (SegformerDropPath,
 #                                                              SegformerOverlapPatchEmbeddings,
 #                                                              SegformerDWConv)
 from transformers import (
-    set_seed,
-    SegformerForImageClassification,
-    SegformerConfig,
     HfArgumentParser,
+    SegformerConfig,
+    SegformerForImageClassification,
+    set_seed,
 )
+from transformers.models.segformer.modeling_segformer import SegformerDropPath, drop_path
+
+import Merak
+from Merak import MerakArguments, MerakTrainer, init_empty_weights
 from Merak.utils.datasets import DynamicGenDataset
 
 
 # Add custom command-line arguments
 def parse_option(parser):
-    parser.add_argument('--model_name', type=str, help='Name of the model to load (e.g. gpt2)')
+    parser.add_argument(
+        "--model_name", type=str, help="Name of the model to load (e.g. gpt2)"
+    )
     return parser
 
 
@@ -45,7 +47,7 @@ def main():
     tp = 1
     dp = 1
     Merak.init(pp, tp, dp)
-    
+
     # merege args
     hfparser = HfArgumentParser(MerakArguments)
     parser = parse_option(hfparser)
@@ -58,14 +60,14 @@ def main():
     # config_kwarg = load_config(args.model_name)
     config_kwarg = {
         "image_size": 224,
-        'num_channels': 3,
+        "num_channels": 3,
         # 'drop_path_rate': 0.0,
-        'return_dict': False,
-        'use_cache': False
+        "return_dict": False,
+        "use_cache": False,
     }
     config = SegformerConfig(**config_kwarg)
 
-    # meta init 
+    # meta init
     with init_empty_weights():
         model = SegformerForImageClassification(config)
 
@@ -73,7 +75,6 @@ def main():
     train_dataset = DynamicGenDataset(
         model.config, mode="vision_only", dataset_size=1e6
     )
-
 
     class MyTrainer(MerakTrainer):
         # define custom loss function
@@ -86,7 +87,9 @@ def main():
                 if model.config.problem_type is None:
                     if model.config.num_labels == 1:
                         model.config.problem_type = "regression"
-                    elif model.config.num_labels > 1 and (labels.dtype == torch.long or labels.dtype == torch.int):
+                    elif model.config.num_labels > 1 and (
+                        labels.dtype == torch.long or labels.dtype == torch.int
+                    ):
                         model.config.problem_type = "single_label_classification"
                     else:
                         model.config.problem_type = "multi_label_classification"
@@ -98,19 +101,21 @@ def main():
                         loss = loss_fct(outputs, labels)
                 elif model.config.problem_type == "single_label_classification":
                     loss_fct = torch.nn.CrossEntropyLoss()
-                    loss = loss_fct(outputs.view(-1, model.config.num_labels), labels.view(-1))
+                    loss = loss_fct(
+                        outputs.view(-1, model.config.num_labels), labels.view(-1)
+                    )
                 elif model.config.problem_type == "multi_label_classification":
                     loss_fct = torch.nn.BCEWithLogitsLoss()
-                    loss = loss_fct(outputs, labels) 
+                    loss = loss_fct(outputs, labels)
                 return loss
+
             return loss_fn
 
-
-    # using our distributed trainer        
+    # using our distributed trainer
     trainer = MyTrainer(
         model=model,
         args=training_args,
-        train_dataset=train_dataset, 
+        train_dataset=train_dataset,
         leaf_modules=(SegformerDropPath,),
     )
 

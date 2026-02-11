@@ -15,28 +15,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import torch
+from transformers import HfArgumentParser, ViTConfig, ViTForImageClassification
+from transformers.utils.dummy_vision_objects import ViTFeatureExtractor
+from utils import collate_fn, compute_metrics, prepare_dataset
+
 # using our distributed trainer
 import Merak
-from Merak import MerakArguments, MerakTrainer, print_rank_0
-from utils import collate_fn, prepare_dataset, compute_metrics
-
-from transformers import (
-    HfArgumentParser,
-    ViTForImageClassification,
-    ViTConfig
-)
-
-import torch
-from transformers.utils.dummy_vision_objects import ViTFeatureExtractor
+from Merak import MerakArguments, MerakTrainer
 
 
 def parse_option(parser):
 
     # easy config modification
-    parser.add_argument('--data-files', type=str, help='path to dataset')
-    parser.add_argument('--cache-dir', type=str, help='where to save cache')
+    parser.add_argument("--data-files", type=str, help="path to dataset")
+    parser.add_argument("--cache-dir", type=str, help="where to save cache")
 
     return parser
+
 
 def main():
     # init dist
@@ -58,12 +54,12 @@ def main():
     class VitTrainer(MerakTrainer):
         def create_dataloader(self):
             self.train_dataloader = torch.utils.data.DataLoader(
-                    self.train_dataset,
-                    batch_sampler=self.get_train_sampler(),
-                    num_workers=self.args.dataloader_num_workers,
-                    pin_memory=self.args.dataloader_pin_memory,
-                    collate_fn=collate_fn,
-                )
+                self.train_dataset,
+                batch_sampler=self.get_train_sampler(),
+                num_workers=self.args.dataloader_num_workers,
+                pin_memory=self.args.dataloader_pin_memory,
+                collate_fn=collate_fn,
+            )
 
         def prepare_data(self, data):
             if not isinstance(data, (tuple, list)):
@@ -75,7 +71,9 @@ def main():
                     inputs_list += list(data.values())
                     return tuple(inputs_list)
                 else:
-                    raise NotImplementedError('only support data in tuple, list or dict')
+                    raise NotImplementedError(
+                        "only support data in tuple, list or dict"
+                    )
             else:
                 return data
 
@@ -83,7 +81,7 @@ def main():
     trainer = VitTrainer(
         model=model,
         args=training_args,
-        train_dataset=ds["train"], 
+        train_dataset=ds["train"],
         eval_dataset=ds["validation"],
         # Data collator will default to DataCollatorWithPadding, so we change it.
         # compute_metrics=compute_metrics,
@@ -91,6 +89,7 @@ def main():
 
     # Training
     trainer.train()
+
 
 if __name__ == "__main__":
     main()

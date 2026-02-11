@@ -4,9 +4,7 @@ def load_config(model_name):
             "_name_or_path": "hf_models/m2m100_418M",
             "activation_dropout": 0.0,
             "activation_function": "relu",
-            "architectures": [
-                "M2M100ForConditionalGeneration"
-            ],
+            "architectures": ["M2M100ForConditionalGeneration"],
             "attention_dropout": 0.1,
             "bos_token_id": 0,
             "d_model": 1024,
@@ -33,10 +31,10 @@ def load_config(model_name):
             "pad_token_id": 1,
             "scale_embedding": True,
             "transformers_version": "4.4.0.dev0",
-            'return_dict': False,
+            "return_dict": False,
             "use_cache": False,
-            "vocab_size": 128112
-            }
+            "vocab_size": 128112,
+        }
     else:
         raise ValueError(f"No {model_name} config")
     return config

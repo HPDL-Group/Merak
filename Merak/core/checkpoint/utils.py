@@ -15,26 +15,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-import sys
-import enum
 import json
-from pathlib import Path
-from typing import Dict
-from safetensors import safe_open
+import os
+import re
+import sys
 from collections import OrderedDict
-from typing import List, Union
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
-from collections import OrderedDict
-from typing import Optional, Tuple, Callable, Union, List, Dict
-from pathlib import Path
+from safetensors import safe_open
 
-from Merak import print_rank_0
+from Merak import get_logger
+
 from .. import mpu
 
 TRANSFORMERS_MODEL_NAME = ["pytorch_model.bin", "adapter_model.bin"]
+logger = get_logger("simple")
 
 def get_checkpoint_name(
     checkpoints_path: str,
@@ -103,20 +101,26 @@ def get_rank_ckpt_name(peft_id: str, zero_file: bool = False) -> str:
     if mpu.get_model_parallel_world_size() == 1 and mpu.get_pipe_parallel_world_size() == 1:
         if zero_file:
             return f"zero_dp_rank_{dp_rank}_opt_states.pt"
-        else:
-            return f"{peft_id}model_optim.pt"
-    elif mpu.get_pipe_parallel_world_size() == 1 and mpu.get_model_parallel_world_size() != 1:
+        return f"{peft_id}model_optim.pt"
+    if mpu.get_pipe_parallel_world_size() == 1 and mpu.get_model_parallel_world_size() != 1:
         if zero_file:
             return f"zero_dp_rank_{dp_rank}_mp_rank_{mp_rank}_opt_states.pt"
-        else:
-            return f"mp_rank_{mp_rank}/{peft_id}partial_model_optim.pt"
-    else:
-        if zero_file:
-            return f"zero_dp_rank_{dp_rank}_mp_rank_{mp_rank}_pp_rank_{pp_rank}_opt_states.pt"
-        else:
-            return f"mp_rank_{mp_rank}_pp_rank_{pp_rank}/{peft_id}partial_model_optim.pt"
+        return f"mp_rank_{mp_rank}/{peft_id}partial_model_optim.pt"
+
+    if zero_file:
+        return f"zero_dp_rank_{dp_rank}_mp_rank_{mp_rank}_pp_rank_{pp_rank}_opt_states.pt"
+    return f"mp_rank_{mp_rank}_pp_rank_{pp_rank}/{peft_id}partial_model_optim.pt"
 
 def read_metadata(tracker_filename: str) -> Tuple[int, bool]:
+    '''
+    Get iterations from metadata file.
+
+    Args:
+        tracker_filename (str): directory of metadata file.
+
+    Returns:
+         Tuple[int, bool]: iterations and release
+    '''
     # Read the tracker file and either set the iteration or
     # mark it as a release checkpoint.
     iteration = 0
@@ -128,11 +132,12 @@ def read_metadata(tracker_filename: str) -> Tuple[int, bool]:
         except ValueError:
             release = metastring == 'release'
             if not release:
-                print_rank_0('ERROR: Invalid metadata file {}. Exiting'.format(
-                    tracker_filename))
+                logger.error(
+                    f'ERROR: Invalid metadata file {tracker_filename}. Exiting',
+                    ranks=[0]
+                )
                 sys.exit()
-    assert iteration > 0 or release, 'error parsing metadata file {}'.format(
-        tracker_filename)
+    assert iteration > 0 or release, f'error parsing metadata file {tracker_filename}'
 
     # Get the max iteration retrieved across the ranks.
     if torch.cuda.is_available():
@@ -146,10 +151,12 @@ def read_metadata(tracker_filename: str) -> Tuple[int, bool]:
     # If not, print a warning and chose the maximum
     # iteration across all ranks.
     if iteration != max_iter:
-        print('WARNING: on rank {} found iteration {} in the '
-              'metadata while max iteration across the ranks '
-              'is {}, replacing it with max iteration.'.format(
-                  mpu.get_pipe_parallel_rank(), iteration, max_iter), flush=True)
+        logger.warning(
+            f'WARNING: on rank {mpu.get_pipe_parallel_rank()} found '
+            f'iteration {iteration} in the metadata while max iteration '
+            f'across the ranks is {max_iter}, replacing it with max iteration.',
+            ranks=[0]
+        )
     return max_iter, release
 
 def detect_checkpoint_format(model_dir=".", peft=False):
@@ -161,26 +168,29 @@ def detect_checkpoint_format(model_dir=".", peft=False):
     # 构造完整文件路径
     pytorch_bin = os.path.join(model_dir, TRANSFORMERS_MODEL_NAME[0])
     adapter = os.path.join(model_dir, TRANSFORMERS_MODEL_NAME[1])
-    safetensors = os.path.join(model_dir, "model.safetensors.index.json")
+    safe_index = os.path.join(model_dir, "model.safetensors.index.json")
+    safe_weight = os.path.join(model_dir, "model.safetensors")
 
     # 检查文件存在性
     has_pytorch = os.path.isfile(pytorch_bin)
     has_adapter = os.path.isfile(adapter)
-    has_safe = os.path.isfile(safetensors)
+    has_safe_index = os.path.isfile(safe_index)
+    has_safe_weight = os.path.isfile(safe_weight)
 
     # 判断结果
-    if has_pytorch and has_safe:
+    if has_pytorch and not peft:
+        return pytorch_bin
+    if has_adapter and peft:
+        return adapter
+    if has_safe_index and not peft:
+        return safe_index
+    if has_safe_weight and not peft:
+        return safe_weight
+    if has_pytorch and has_safe_weight:
         raise ValueError(
             "The path of resume_from_checkpoint has at least 2 type of checkpint file."
         )
-    elif has_pytorch and not peft:
-        return pytorch_bin
-    elif has_adapter and peft:
-        return adapter
-    elif has_safe and not peft:
-        return safetensors
-    else:
-        return None
+    return None
 
 def check_state_dict(
     model: nn.Module,
@@ -207,33 +217,33 @@ def check_state_dict(
     def _convert_keys(new_keys: str, old_keys: str, state_dict: OrderedDict):
         new_state_dict = {}
 
-        for i in range(len(new_keys)):
-            for j in range(len(old_keys)):
-                split_mk = new_keys[i].split(".")[1:]
-                split_uk = old_keys[j].split(".")
+        for _, nk in enumerate(new_keys):
+            for _, ok in enumerate(old_keys):
+                split_mk = nk.split(".")[1:]
+                split_uk = ok.split(".")
                 mk = ".".join(split_mk)
                 uk = ".".join(split_uk)
                 min_len = min(len(split_mk), len(split_uk))
-                if split_mk == split_uk[2:] or split_mk == split_uk[1:]:
-                    new_state_dict[new_keys[i]] = state_dict[old_keys[j]]
-                    # print(new_keys[i], old_keys[j],
+                if split_mk in [split_uk[2:], split_uk[1:]]:
+                    new_state_dict[nk] = state_dict[ok]
+                    # print(nk, ok,
                     #       mpu.get_pipe_parallel_rank())
                     break
-                elif mk == uk or new_keys[i] == old_keys[j]:
-                    new_state_dict[new_keys[i]] = state_dict[old_keys[j]]
-                    # print(new_keys[i], old_keys[j],
+                if mk == uk or nk == ok:
+                    new_state_dict[nk] = state_dict[ok]
+                    # print(nk, ok,
                     #       mpu.get_pipe_parallel_rank())
                     break
-                elif min_len <= 3 and same_layer_idx(split_mk, split_uk) \
+                if min_len <= 3 and same_layer_idx(split_mk, split_uk) \
                     and split_mk[-2:] == split_uk[-2:]:
-                    new_state_dict[new_keys[i]] = state_dict[old_keys[j]]
-                    # print(new_keys[i], old_keys[j],
+                    new_state_dict[nk] = state_dict[ok]
+                    # print(nk, ok,
                     #       mpu.get_pipe_parallel_rank())
                     break
-                elif min_len > 3 and same_layer_idx(split_mk, split_uk) \
+                if min_len > 3 and same_layer_idx(split_mk, split_uk) \
                     and split_mk[-4:] == split_uk[-4:]:
-                    new_state_dict[new_keys[i]] = state_dict[old_keys[j]]
-                    # print(new_keys[i], old_keys[j],
+                    new_state_dict[nk] = state_dict[ok]
+                    # print(nk, ok,
                     #       mpu.get_pipe_parallel_rank())
                     break
 
@@ -270,13 +280,13 @@ def check_state_dict(
         if verbose and mpu.get_data_parallel_rank() == 0:
             if len(missing_keys) > 0:
                 # Filter out keys not in the load list
-                print(f'Stage {mpu.get_pipe_parallel_rank()}:'
+                logger.info(f'Stage {mpu.get_pipe_parallel_rank()}:'
                    'Warning! Some weights of model were not initialized from the model checkpoint.'
                   f'Missing keys: {missing_keys}')
             if len(unexpected_keys) > 0:
-                print(f'Stage {mpu.get_pipe_parallel_rank()}:'
-                  f'Warning! Some weights of the model checkpoint at {args.resume_from_checkpoint} were not used.'
-                  f'Unexcepted keys: {unexpected_keys}')
+                logger.info(f'Stage {mpu.get_pipe_parallel_rank()}:'
+                  f'Warning! Some weights of the model checkpoint at {args.resume_from_checkpoint} '
+                  f'were not used. Unexcepted keys: {unexpected_keys}')
 
     if "model" in old_state_dict:
         old_state_dict['model'] = new_state_dict
@@ -286,8 +296,9 @@ def check_state_dict(
 
 def ensure_directory_exists(path: str) -> None:
     """Ensures the directory exists, creating it if necessary."""
-    if not os.path.exists(path):
-        os.makedirs(path)
+    dirname = os.path.dirname(path)
+    if not os.path.exists(dirname):
+        os.makedirs(dirname, exist_ok=True)
 
 def get_checkpoint_tracker_filename(checkpoints_path: str) -> str:
     """Tracker file rescords the latest chckpoint during
@@ -300,7 +311,8 @@ def get_best_checkpoint_filename(checkpoints_path: str) -> str:
     training to restart from."""
     return os.path.join(checkpoints_path, 'best_model_loss.txt')
 
-def unwrap_model(model: Union[nn.Module, List[nn.Module]]) -> List[nn.Module]:
+def unwrap_model(model: Union[nn.Module, List[nn.Module]]) -> Union[nn.Module, List[nn.Module]]:
+    '''Normalize model input to either single module or list of modules.'''
     return_list = True
     if not isinstance(model, list):
         model = [model]
@@ -312,17 +324,10 @@ def unwrap_model(model: Union[nn.Module, List[nn.Module]]) -> List[nn.Module]:
         return unwrapped_model[0]
     return unwrapped_model
 
-
-def ensure_directory_exists(filename: str):
-    """Build filename's path if it does not already exists."""
-    dirname = os.path.dirname(filename)
-    if not os.path.exists(dirname):
-        os.makedirs(dirname)
-
-
-def same_layer_idx(list1: List[int], list2: List[int]) -> bool:
-    digits1 = set([int(x) for x in list1 if x.isdigit()])
-    digits2 = set([int(x) for x in list2 if x.isdigit()])
+def same_layer_idx(list1: List[str], list2: List[str]) -> bool:
+    ''''Check if two str lists contain same digits'''
+    digits1 = [int(x) for x in list1 if x.isdigit()]
+    digits2 = [int(x) for x in list2 if x.isdigit()]
     return digits1 == digits2
 
 
@@ -352,7 +357,8 @@ def get_zero_param_shapes(optimizer: torch.optim.Optimizer, model: nn.Module) ->
             shape = param.shape
             if param not in param_names:
                 raise ValueError(
-                    f"failed to find optimizer param in named params")
+                    "failed to find optimizer param in named params"
+                )
             name = param_names[param]
             param_shapes[name] = shape
 
@@ -363,64 +369,67 @@ def get_zero_param_shapes(optimizer: torch.optim.Optimizer, model: nn.Module) ->
     return param_group_shapes
 
 
-class PeftType(str, enum.Enum):
-    PROMPT_TUNING = "PROMPT_TUNING"
-    MULTITASK_PROMPT_TUNING = "MULTITASK_PROMPT_TUNING"
-    P_TUNING = "P_TUNING"
-    PREFIX_TUNING = "PREFIX_TUNING"
-    LORA = "LORA"
-    ADALORA = "ADALORA"
-    ADAPTION_PROMPT = "ADAPTION_PROMPT"
-    IA3 = "IA3"
-    LOHA = "LOHA"
+def find_latest_ckpt_folder(directory):
+    """Find the latest dated _ckpt folder in the directory"""
+    pattern = re.compile(r'^(\d{4}-\d{2}-\d{2})_ckpt$')
+    latest_date = None
+    latest_folder = None
 
-class ShardedSafetensorLoader:
-    def __init__(
-            self,
-            model,
-            model_dir: str = ".",
-            index_file: str = "model.safetensors.index.json"
-        ):
-        self.model = model
-        self.model_dir = Path(model_dir)
-        self.index = self._load_index(index_file)
-        self.cached_files: Dict[str, dict] = {}  # 缓存已加载的分片文件
+    for folder in os.listdir(directory):
+        match = pattern.match(folder)
+        if match:
+            try:
+                current_date = datetime.strptime(match.group(1), '%Y-%m-%d').date()
+                if latest_date is None or current_date > latest_date:
+                    latest_date = current_date
+                    latest_folder = folder
+            except ValueError:
+                continue
 
-    def _load_index(self, index_file: str) -> dict:
-        """加载分片索引文件"""
-        index_path = self.model_dir / index_file
-        if not index_path.exists():
-            raise FileNotFoundError(f"索引文件不存在: {index_path}")
+    return latest_folder
 
-        with open(index_path, "r") as f:
-            return json.load(f)["weight_map"]  # 提取权重映射表
+def load_sharded_safetensors(
+        model,
+        safetensor_file: str = ".",
+    ):
+    '''Loader for sharded safetensor model weights with lazy loading capability.'''
+    assert os.path.isfile(safetensor_file)
+    safetensor_path = os.path.dirname(safetensor_file)
+    safetensor_filename = os.path.basename(safetensor_file)
+    cached_files: Dict[str, dict] = {}  # 缓存已加载的分片文件
 
-    def _get_tensor(self, layer_name: str) -> torch.Tensor:
-        """按层名获取张量"""
-        if layer_name not in self.index:
-            raise KeyError(f"权重 {layer_name} 不存在于索引文件中")
-
-        shard_file = self.index[layer_name]
-        if shard_file not in self.cached_files:
-            # 延迟加载分片文件
-            shard_path = self.model_dir / shard_file
-            if not shard_path.exists():
-                raise FileNotFoundError(f"分片文件 {shard_file} 不存在")
-
-            with safe_open(shard_path, framework="pt") as f:
-                self.cached_files[shard_file] = {k: f.get_tensor(k) for k in f.keys()}
-
-        return self.cached_files[shard_file][layer_name]
-
-    def get_state_dict(self):
+    if safetensor_filename == "model.safetensors":
+        # whole load
+        with safe_open(safetensor_file, framework="pt") as f:
+            weights = {k: f.get_tensor(k) for k in f.keys()}
+    else:
         weights = {}
-        state_dict_keys = list(self.model.state_dict().keys())
+        state_dict_keys = list(model.state_dict().keys())
+
+        # sharded load
+        with open(safetensor_file, "r") as f:
+            index = json.load(f)["weight_map"]
+        is_start_model = list(index.keys())[0].split('.')[0] == 'model'
         for k in state_dict_keys:
             split_k = k.split('.')
-            del split_k[0]
+            if is_start_model:
+                split_k[0] = "model"
+            else:
+                del split_k[0]
             new_k = ".".join(split_k)
-            try:
-                weights[k] = self._get_tensor(new_k)
-            except KeyError:
+
+            if new_k not in index:
                 continue
-        return weights
+                # raise KeyError(f"权重 {new_k} 不存在于索引文件中")
+
+            shard_file = index[new_k]
+            if shard_file not in cached_files:
+                # 延迟加载分片文件
+                shard_path = os.path.join(safetensor_path, shard_file)
+                if not os.path.isfile(shard_path):
+                    raise FileNotFoundError(f"分片文件 {shard_file} 不存在")
+
+                with safe_open(shard_path, framework="pt") as f:
+                    weights[k] = f.get_tensor(new_k)
+
+    return weights

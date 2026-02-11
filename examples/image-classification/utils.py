@@ -18,8 +18,13 @@
 # Parts of the code here are adapted from https://github.com/huggingface/transformers/blob/v4.15.0/examples/pytorch/image-classification/run_image_classification.py
 
 import os
-from PIL import Image
+
+import datasets
+import numpy as np
 import torch
+from datasets import load_dataset
+from PIL import Image
+from sklearn.metrics import accuracy_score
 from torchvision.transforms import (
     CenterCrop,
     Compose,
@@ -29,30 +34,28 @@ from torchvision.transforms import (
     Resize,
     ToTensor,
 )
-import numpy as np
-import datasets
-from datasets import load_dataset
-from sklearn.metrics import accuracy_score
+
 
 def pil_loader(path: str):
     with open(path, "rb") as f:
         im = Image.open(f)
         return im.convert("RGB")
 
+
 def collate_fn(examples):
     data_list = []
     for i in examples[0].keys():
-        if i != 'image_file_path' and i != 'image':
+        if i != "image_file_path" and i != "image":
             if torch.is_tensor(examples[0][i]):
                 data = torch.stack([example[i] for example in examples])
             else:
                 data = torch.tensor([example[i] for example in examples])
             data_list.append(data)
     inputs = list(examples[0].keys())
-    if 'image_file_path' in inputs:
-        inputs.remove('image_file_path')
-    if 'image' in inputs:
-        inputs.remove('image')
+    if "image_file_path" in inputs:
+        inputs.remove("image_file_path")
+    if "image" in inputs:
+        inputs.remove("image")
     return {j: data_list[i] for i, j in enumerate(inputs)}
 
 
@@ -62,23 +65,26 @@ def compute_metrics(p, normalize=True, sample_weight=None):
     """Computes accuracy on a batch of predictions"""
     # Load the accuracy metric from the datasets package
     metric = {
-            "accuracy": accuracy_score(
-                p.label_ids, np.argmax(p.predictions, axis=1), 
-                normalize=normalize, sample_weight=sample_weight
-            ).item(),
-        }
+        "accuracy": accuracy_score(
+            p.label_ids,
+            np.argmax(p.predictions, axis=1),
+            normalize=normalize,
+            sample_weight=sample_weight,
+        ).item(),
+    }
     return metric
+
 
 def prepare_dataset(data_path, cache_dir):
     # Initialize our dataset and prepare it for the 'image-classification' task.
     data_files = {}
-    data_files['train'] = os.path.join(data_path, "train/**")
-    data_files['validation'] = os.path.join(data_path, "val/**")
+    data_files["train"] = os.path.join(data_path, "train/**")
+    data_files["validation"] = os.path.join(data_path, "val/**")
     if os.path.isdir(cache_dir):
         ds = load_dataset(cache_dir)
     else:
         ds = load_dataset(
-            'imagefolder',
+            "imagefolder",
             # data_args.dataset_config_name,
             data_files=data_files,
             cache_dir=cache_dir,
@@ -108,14 +114,18 @@ def prepare_dataset(data_path, cache_dir):
         """Apply _train_transforms across a batch."""
         if "image" in example_batch.keys():
             example_batch["pixel_values"] = [
-                _train_transforms(pil_img.convert("RGB")) for pil_img in example_batch["image"]
+                _train_transforms(pil_img.convert("RGB"))
+                for pil_img in example_batch["image"]
             ]
         return example_batch
 
     def val_transforms(example_batch):
         """Apply _val_transforms across a batch."""
         if "image" in example_batch.keys():
-            example_batch["pixel_values"] = [_val_transforms(pil_img.convert("RGB")) for pil_img in example_batch["image"]]
+            example_batch["pixel_values"] = [
+                _val_transforms(pil_img.convert("RGB"))
+                for pil_img in example_batch["image"]
+            ]
         return example_batch
 
     # Set the training transforms

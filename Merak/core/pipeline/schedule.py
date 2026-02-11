@@ -19,9 +19,10 @@
 
 from .exec_schedule import *
 
+
 class InferenceSchedule(PipeSchedule):
-    """A schedule for inferencing batches using pipeline parallelism.
-    """
+    """A schedule for inferencing batches using pipeline parallelism."""
+
     def steps(self):
         """"""
         prev_micro_batch_id = -1
@@ -79,6 +80,7 @@ class TrainSchedule(PipeSchedule):
     convergence follows that of a data parallel approach with the same batch
     size.
     """
+
     def steps(self):
         """"""
         prev_micro_batch_id = -1
@@ -97,18 +99,22 @@ class TrainSchedule(PipeSchedule):
 
             # Exchange activations
             if is_forward:
-                if self._valid_micro_batch(micro_batch_id) and \
-                    self._valid_stage(self.prev_stage):
+                if self._valid_micro_batch(micro_batch_id) and self._valid_stage(
+                    self.prev_stage
+                ):
                     cmds.append(RecvActivation(curr_buffer))
-                if self._valid_micro_batch(prev_micro_batch_id) and \
-                    self._valid_stage(self.prev_stage):
+                if self._valid_micro_batch(prev_micro_batch_id) and self._valid_stage(
+                    self.prev_stage
+                ):
                     cmds.append(SendGrad(prev_buffer))
             else:
-                if self._valid_micro_batch(prev_micro_batch_id) and \
-                    self._valid_stage(self.next_stage):
+                if self._valid_micro_batch(prev_micro_batch_id) and self._valid_stage(
+                    self.next_stage
+                ):
                     cmds.append(SendActivation(prev_buffer))
-                if self._valid_micro_batch(micro_batch_id) and \
-                    self._valid_stage(self.next_stage):
+                if self._valid_micro_batch(micro_batch_id) and self._valid_stage(
+                    self.next_stage
+                ):
                     cmds.append(RecvGrad(curr_buffer))
 
             # First/last stage loads
@@ -134,8 +140,7 @@ class TrainSchedule(PipeSchedule):
             yield cmds
 
     def num_pipe_buffers(self):
-        """As many buffers as the distance from this stage to the last stage.
-        """
+        """As many buffers as the distance from this stage to the last stage."""
         buffers = min(self.stages - self.stage_id + 1, self.micro_batches)
         return max(2, buffers)
 
@@ -189,6 +194,7 @@ class MergeP2PTrainSchedule(TrainSchedule):
     convergence follows that of a data parallel approach with the same batch
     size.
     """
+
     def steps(self):
         """"""
         prev_micro_batch_id = -1
@@ -207,28 +213,32 @@ class MergeP2PTrainSchedule(TrainSchedule):
 
             # Exchange activations
             if is_forward:
-                if self._valid_micro_batch(micro_batch_id) and \
-                    self._valid_stage(self.prev_stage):
-                    if self._valid_micro_batch(prev_micro_batch_id) and \
-                        self._valid_stage(self.prev_stage):
-                        cmds.append(SendGradRecvActivation((prev_buffer,
-                                                            curr_buffer)))
+                if self._valid_micro_batch(micro_batch_id) and self._valid_stage(
+                    self.prev_stage
+                ):
+                    if self._valid_micro_batch(
+                        prev_micro_batch_id
+                    ) and self._valid_stage(self.prev_stage):
+                        cmds.append(SendGradRecvActivation((prev_buffer, curr_buffer)))
                     else:
                         cmds.append(RecvActivation(curr_buffer))
-                elif self._valid_micro_batch(prev_micro_batch_id) and \
-                    self._valid_stage(self.prev_stage):
-                        cmds.append(SendGrad(prev_buffer))
+                elif self._valid_micro_batch(prev_micro_batch_id) and self._valid_stage(
+                    self.prev_stage
+                ):
+                    cmds.append(SendGrad(prev_buffer))
             else:
-                if self._valid_micro_batch(prev_micro_batch_id) and \
-                    self._valid_stage(self.next_stage):
-                    if self._valid_micro_batch(micro_batch_id) and \
-                        self._valid_stage(self.next_stage):
-                        cmds.append(SendActivationRecvGrad((prev_buffer,
-                                                            curr_buffer)))
+                if self._valid_micro_batch(prev_micro_batch_id) and self._valid_stage(
+                    self.next_stage
+                ):
+                    if self._valid_micro_batch(micro_batch_id) and self._valid_stage(
+                        self.next_stage
+                    ):
+                        cmds.append(SendActivationRecvGrad((prev_buffer, curr_buffer)))
                     else:
                         cmds.append(SendActivation(prev_buffer))
-                elif self._valid_micro_batch(micro_batch_id) and \
-                    self._valid_stage(self.next_stage):
+                elif self._valid_micro_batch(micro_batch_id) and self._valid_stage(
+                    self.next_stage
+                ):
                     cmds.append(RecvGrad(curr_buffer))
 
             # First/last stage loads
@@ -253,6 +263,7 @@ class MergeP2PTrainSchedule(TrainSchedule):
             prev_micro_batch_id = micro_batch_id
             yield cmds
 
+
 class PreRecomputeTrainSchedule(TrainSchedule):
     """A schedule for training a batch using hybrid parallelism.
 
@@ -260,6 +271,7 @@ class PreRecomputeTrainSchedule(TrainSchedule):
     convergence follows that of a data parallel approach with the same batch
     size.
     """
+
     def steps(self):
         """"""
         prev_micro_batch_id = -1
@@ -278,28 +290,32 @@ class PreRecomputeTrainSchedule(TrainSchedule):
 
             # Exchange activations
             if is_forward:
-                if self._valid_micro_batch(micro_batch_id) and \
-                   self._valid_stage(self.prev_stage):
-                    if self._valid_micro_batch(prev_micro_batch_id) and \
-                       self._valid_stage(self.prev_stage):
-                        cmds.append(SendGradRecvActivation((prev_buffer,
-                                                            curr_buffer)))
+                if self._valid_micro_batch(micro_batch_id) and self._valid_stage(
+                    self.prev_stage
+                ):
+                    if self._valid_micro_batch(
+                        prev_micro_batch_id
+                    ) and self._valid_stage(self.prev_stage):
+                        cmds.append(SendGradRecvActivation((prev_buffer, curr_buffer)))
                     else:
                         cmds.append(RecvActivation(curr_buffer))
-                elif self._valid_micro_batch(prev_micro_batch_id) and \
-                     self._valid_stage(self.prev_stage):
-                        cmds.append(SendGrad(prev_buffer))
+                elif self._valid_micro_batch(prev_micro_batch_id) and self._valid_stage(
+                    self.prev_stage
+                ):
+                    cmds.append(SendGrad(prev_buffer))
             else:
-                if self._valid_micro_batch(prev_micro_batch_id) and \
-                   self._valid_stage(self.next_stage):
-                    if self._valid_micro_batch(micro_batch_id) and \
-                       self._valid_stage(self.next_stage):
-                        cmds.append(SendActivationRecvGrad((prev_buffer,
-                                                            curr_buffer)))
+                if self._valid_micro_batch(prev_micro_batch_id) and self._valid_stage(
+                    self.next_stage
+                ):
+                    if self._valid_micro_batch(micro_batch_id) and self._valid_stage(
+                        self.next_stage
+                    ):
+                        cmds.append(SendActivationRecvGrad((prev_buffer, curr_buffer)))
                     else:
                         cmds.append(SendActivation(prev_buffer))
-                elif self._valid_micro_batch(micro_batch_id) and \
-                     self._valid_stage(self.next_stage):
+                elif self._valid_micro_batch(micro_batch_id) and self._valid_stage(
+                    self.next_stage
+                ):
                     cmds.append(RecomputeRecvGrad(curr_buffer))
 
             # First/last stage loads
@@ -310,8 +326,10 @@ class PreRecomputeTrainSchedule(TrainSchedule):
             # Computation
             if self._valid_micro_batch(micro_batch_id):
                 if is_forward:
-                    if self.micro_batches - micro_batch_id + self.stage_id \
-                       < self.stages:
+                    if (
+                        self.micro_batches - micro_batch_id + self.stage_id
+                        < self.stages
+                    ):
                         cmds.append(PreCheckpointForwardPass(curr_buffer))
                     else:
                         cmds.append(ForwardPass(curr_buffer))
@@ -338,6 +356,7 @@ class LastNoRecomputeTrainSchedule(TrainSchedule):
     convergence follows that of a data parallel approach with the same batch
     size.
     """
+
     def steps(self):
         """"""
         prev_micro_batch_id = -1
@@ -358,39 +377,47 @@ class LastNoRecomputeTrainSchedule(TrainSchedule):
 
             # Exchange activations
             if is_forward:
-                if self._valid_micro_batch(micro_batch_id) and \
-                   self._valid_stage(self.prev_stage):
-                    if self._valid_micro_batch(prev_micro_batch_id) and \
-                       self._valid_stage(self.prev_stage):
+                if self._valid_micro_batch(micro_batch_id) and self._valid_stage(
+                    self.prev_stage
+                ):
+                    if self._valid_micro_batch(
+                        prev_micro_batch_id
+                    ) and self._valid_stage(self.prev_stage):
                         if self.stage_id == self.stages - 1 and frist_sendrecv:
                             frist_sendrecv = False
                             cmds.append(SendGrad(prev_buffer))
                             cmds.append(RecvActivation(curr_buffer))
                         else:
-                            cmds.append(SendGradRecvActivation((prev_buffer,
-                                                                curr_buffer)))
+                            cmds.append(
+                                SendGradRecvActivation((prev_buffer, curr_buffer))
+                            )
                     else:
                         cmds.append(RecvActivation(curr_buffer))
-                elif self._valid_micro_batch(prev_micro_batch_id) and \
-                     self._valid_stage(self.prev_stage):
-                        cmds.append(SendGrad(prev_buffer))
+                elif self._valid_micro_batch(prev_micro_batch_id) and self._valid_stage(
+                    self.prev_stage
+                ):
+                    cmds.append(SendGrad(prev_buffer))
             else:
-                if self._valid_micro_batch(prev_micro_batch_id) and \
-                   self._valid_stage(self.next_stage):
-                    if self._valid_micro_batch(micro_batch_id) and \
-                       self._valid_stage(self.next_stage):
+                if self._valid_micro_batch(prev_micro_batch_id) and self._valid_stage(
+                    self.next_stage
+                ):
+                    if self._valid_micro_batch(micro_batch_id) and self._valid_stage(
+                        self.next_stage
+                    ):
                         if self.stage_id == self.stages - 2 and frist_sendrecv:
                             frist_sendrecv = False
                             cmds.append(RecomputeRecvGrad(curr_buffer))
                             cmds.append(SendActivation(prev_buffer))
                             cmds.append(RestoreRecomputeStatus())
                         else:
-                            cmds.append(SendActivationRecvGrad((prev_buffer,
-                                                                curr_buffer)))
+                            cmds.append(
+                                SendActivationRecvGrad((prev_buffer, curr_buffer))
+                            )
                     else:
                         cmds.append(SendActivation(prev_buffer))
-                elif self._valid_micro_batch(micro_batch_id) and \
-                     self._valid_stage(self.next_stage):
+                elif self._valid_micro_batch(micro_batch_id) and self._valid_stage(
+                    self.next_stage
+                ):
                     if self.stage_id == self.stages - 2:
                         cmds.append(RecvGrad(curr_buffer))
                     else:
@@ -404,9 +431,11 @@ class LastNoRecomputeTrainSchedule(TrainSchedule):
             # Computation
             if self._valid_micro_batch(micro_batch_id):
                 if is_forward:
-                    if self.micro_batches - micro_batch_id + self.stage_id \
-                        < self.stages and \
-                        self.stage_id != self.stages - 2:
+                    if (
+                        self.micro_batches - micro_batch_id + self.stage_id
+                        < self.stages
+                        and self.stage_id != self.stages - 2
+                    ):
                         cmds.append(PreCheckpointForwardPass(curr_buffer))
                     elif self.stage_id == self.stages - 2 and frist_fp:
                         frist_fp = False
@@ -429,6 +458,7 @@ class LastNoRecomputeTrainSchedule(TrainSchedule):
             prev_micro_batch_id = micro_batch_id
             yield cmds
 
+
 class FullCriticalPathTrainSchedule(TrainSchedule):
     """A schedule for training a batch using hybrid parallelism.
 
@@ -436,6 +466,7 @@ class FullCriticalPathTrainSchedule(TrainSchedule):
     convergence follows that of a data parallel approach with the same batch
     size.
     """
+
     def steps(self):
         """"""
         prev_micro_batch_id = -1
@@ -462,69 +493,73 @@ class FullCriticalPathTrainSchedule(TrainSchedule):
 
             # Exchange activations
             if is_forward:
-                if self._valid_micro_batch(micro_batch_id) and \
-                   self._valid_stage(self.prev_stage):
+                if self._valid_micro_batch(micro_batch_id) and self._valid_stage(
+                    self.prev_stage
+                ):
                     if self._valid_micro_batch(prev_micro_batch_id):
                         if self.stage_id == self.stages - 1 and frist_sendrecv:
                             frist_sendrecv = False
                             cmds.append(SendGrad(prev_buffer))
                             cmds.append(RecvActivation(curr_buffer))
-                        elif self.stage_id == self.stages - 1 and \
-                             second_sendrecv:
+                        elif self.stage_id == self.stages - 1 and second_sendrecv:
                             second_sendrecv = False
                             cmds.append(SendGrad(prev_buffer))
                             cmds.append(RecvActivation(curr_buffer))
-                        elif self.stage_id == self.stages - 2 and \
-                             frist_sendrecv:
+                        elif self.stage_id == self.stages - 2 and frist_sendrecv:
                             frist_sendrecv = False
                             cmds.append(RecomputeRecvGrad(b0_buffer))
-                            cmds.append(SendActivation(f2_buffer-1))
+                            cmds.append(SendActivation(f2_buffer - 1))
                             cmds.append(RestoreRecomputeStatus())
                         else:
-                            cmds.append(SendGradRecvActivation((prev_buffer,
-                                                                curr_buffer)))
+                            cmds.append(
+                                SendGradRecvActivation((prev_buffer, curr_buffer))
+                            )
                     else:
                         cmds.append(RecvActivation(curr_buffer))
-                elif self._valid_micro_batch(prev_micro_batch_id) and \
-                     self._valid_stage(
-                            self.prev_stage):
+                elif self._valid_micro_batch(prev_micro_batch_id) and self._valid_stage(
+                    self.prev_stage
+                ):
                     cmds.append(SendGrad(prev_buffer))
-                elif frist_sendrecv and self.stages == 2 and \
-                     self._valid_micro_batch(micro_batch_id) and \
-                     self.stage_id == 0 and \
-                     self._valid_micro_batch(prev_micro_batch_id):
+                elif (
+                    frist_sendrecv
+                    and self.stages == 2
+                    and self._valid_micro_batch(micro_batch_id)
+                    and self.stage_id == 0
+                    and self._valid_micro_batch(prev_micro_batch_id)
+                ):
                     frist_sendrecv = False
                     cmds.append(RecomputeRecvGrad(b0_buffer))
-                    cmds.append(SendActivation(f2_buffer-1))
+                    cmds.append(SendActivation(f2_buffer - 1))
                     cmds.append(RestoreRecomputeStatus())
             else:
-                if self._valid_micro_batch(prev_micro_batch_id) and \
-                   self._valid_stage(self.next_stage):
-                    if self._valid_micro_batch(micro_batch_id) and \
-                       self._valid_stage(self.next_stage):
+                if self._valid_micro_batch(prev_micro_batch_id) and self._valid_stage(
+                    self.next_stage
+                ):
+                    if self._valid_micro_batch(micro_batch_id) and self._valid_stage(
+                        self.next_stage
+                    ):
                         if self.stage_id == self.stages - 2 and frist_sendrecv:
                             cmds.append(RecvActivation(f2_buffer))
-                        elif self.stage_id == self.stages - 2 and \
-                             second_sendrecv:
+                        elif self.stage_id == self.stages - 2 and second_sendrecv:
                             second_sendrecv = False
                             cmds.append(SendGrad(b0_buffer))
                             cmds.append(RecomputeRecvGrad(curr_buffer))
                             cmds.append(SendActivation(f2_buffer))
                             cmds.append(RestoreRecomputeStatus())
-                        elif self.stage_id == self.stages - 3 and \
-                             frist_sendrecv:
+                        elif self.stage_id == self.stages - 3 and frist_sendrecv:
                             frist_sendrecv = False
                             cmds.append(SendActivation(prev_buffer))
                             cmds.append(RecomputeRecvGrad(curr_buffer))
                             cmds.append(RestoreRecomputeStatus())
                         else:
-                            cmds.append(SendActivationRecvGrad((prev_buffer,
-                                                                curr_buffer)))
+                            cmds.append(
+                                SendActivationRecvGrad((prev_buffer, curr_buffer))
+                            )
                     else:
                         cmds.append(SendActivation(prev_buffer))
-                elif self._valid_micro_batch(micro_batch_id) and \
-                     self._valid_stage(
-                        self.next_stage):
+                elif self._valid_micro_batch(micro_batch_id) and self._valid_stage(
+                    self.next_stage
+                ):
                     if self.stage_id == self.stages - 2:
                         cmds.append(RecvGrad(curr_buffer))
                     else:
@@ -538,9 +573,11 @@ class FullCriticalPathTrainSchedule(TrainSchedule):
             # Computation
             if self._valid_micro_batch(micro_batch_id):
                 if is_forward:
-                    if self.micro_batches - micro_batch_id + self.stage_id \
-                        < self.stages and \
-                        self.stage_id != self.stages - 2:
+                    if (
+                        self.micro_batches - micro_batch_id + self.stage_id
+                        < self.stages
+                        and self.stage_id != self.stages - 2
+                    ):
                         cmds.append(PreCheckpointForwardPass(curr_buffer))
                     elif self.stage_id == self.stages - 2 and frist_fp:
                         frist_fp = False
@@ -551,7 +588,7 @@ class FullCriticalPathTrainSchedule(TrainSchedule):
                         cmds.append(PreCheckpointForwardPass(curr_buffer))
                         cmds.append(RestoreRecomputeStatus())
                     elif self.stage_id == self.stages - 2 and frist_bp == 1:
-                        # use third forward for first backward 
+                        # use third forward for first backward
 
                         frist_bp = 2
                         if isinstance(cmds[-1], LoadMicroBatch):
@@ -567,7 +604,7 @@ class FullCriticalPathTrainSchedule(TrainSchedule):
                         cmds.append(ForwardPass(curr_buffer))
                 else:
                     if self.stage_id == self.stages - 2 and frist_bp == 0:
-                        # use first backward for third forward 
+                        # use first backward for third forward
                         frist_bp = 1
                         if self.stage_id == 0:
                             cmds.append(LoadMicroBatch(f2_buffer))
@@ -592,6 +629,7 @@ class DataParallelSchedule(PipeSchedule):
     """An example schedule that trains using traditional data parallelism with
     gradient accumulation.
     """
+
     def steps(self):
         """"""
         for step_id in range(self.micro_batches):
@@ -601,15 +639,16 @@ class DataParallelSchedule(PipeSchedule):
                 BackwardPass(buffer_id=0),
             ]
             if step_id == self.micro_batches - 1:
-                cmds.extend([
-                    ReduceGrads(),
-                    OptimizerStep(),
-                ])
+                cmds.extend(
+                    [
+                        ReduceGrads(),
+                        OptimizerStep(),
+                    ]
+                )
             yield cmds
 
     def num_pipe_buffers(self):
-        """Only one pipeline buffer needed.
-        """
+        """Only one pipeline buffer needed."""
         return 1
 
 

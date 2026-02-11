@@ -31,10 +31,10 @@ def _snake_case(s: str):
     prev_lower = False
     for c in s:
         if prev_lower and c.isupper():
-            chars.append('_')
+            chars.append("_")
         chars.append(c.lower())
         prev_lower = c.islower()
-    return ''.join(chars)
+    return "".join(chars)
 
 
 def _get_count(param_count: Dict[str, int], node_name: str):
@@ -45,15 +45,16 @@ def _get_count(param_count: Dict[str, int], node_name: str):
     elif node_name.replace(".", "_") in param_count:
         return param_count[node_name.replace(".", "_")]
     else:
-        raise RuntimeError(f"Unable to find match between \
-                             param {param_count} and node {node_name}")
+        raise RuntimeError(
+            f"Unable to find match between \
+                             param {param_count} and node {node_name}"
+        )
 
 
 def _create_shard_to_param_count(
-        param_count: Dict[str, int],
-        node_name_to_shard_id: Dict[str, int]
-    ) -> Dict[str, int]:
-    """Utility to create a map from shard id to param count using 
+    param_count: Dict[str, int], node_name_to_shard_id: Dict[str, int]
+) -> Dict[str, int]:
+    """Utility to create a map from shard id to param count using
     existing state."""
 
     shard_to_param_count: Dict[int, int] = {}

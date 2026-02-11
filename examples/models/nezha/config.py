@@ -2,9 +2,7 @@ def load_config(model_name):
     if model_name == "nezha-cn-base":
         config = {
             "_name_or_path": "nezha-cn-base",
-            "architectures": [
-                "NeZhaForMaskedLM"
-            ],
+            "architectures": ["NeZhaForMaskedLM"],
             "attention_probs_dropout_prob": 0.1,
             "bos_token_id": 2,
             "classifier_dropout": 0.1,
@@ -29,9 +27,9 @@ def load_config(model_name):
             "type_vocab_size": 2,
             "use_cache": False,
             "use_relative_position": True,
-            'return_dict': False,
-            "vocab_size": 21128
-            }
+            "return_dict": False,
+            "vocab_size": 21128,
+        }
     else:
         raise ValueError(f"No {model_name} config")
     return config

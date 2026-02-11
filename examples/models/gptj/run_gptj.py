@@ -15,25 +15,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import Merak
 import torch
-
-
-from Merak import MerakArguments, MerakTrainer, init_empty_weights
 from config import load_config
+from transformers import GPTJConfig, GPTJForCausalLM, HfArgumentParser, set_seed
 
-from transformers import (
-    set_seed,
-    GPTJForCausalLM,
-    GPTJConfig,
-    HfArgumentParser,
-)
+import Merak
+from Merak import MerakArguments, MerakTrainer, init_empty_weights
 from Merak.utils.datasets import DynamicGenDataset
 
 
 # Add custom command-line arguments
 def parse_option(parser):
-    parser.add_argument('--model_name', type=str, help='Name of the model to load (e.g. gpt2)')
+    parser.add_argument(
+        "--model_name", type=str, help="Name of the model to load (e.g. gpt2)"
+    )
     return parser
 
 
@@ -56,13 +51,16 @@ def main():
         from Merak.core.tensor_parallel.mp_attrs import set_tp_layer_lists
 
         # input_output_mapping=[(1, 3, 'col'), (1, 1,'row'), (1, 4, 'col'), (4, 1, 'row')]
-        col_para_list = ['q_proj', 'k_proj', 'v_proj', 'fc_in']
-        row_para_list = ['out_proj', 'fc_out']
-        tp_attr_list=['num_attention_heads']  
+        col_para_list = ["q_proj", "k_proj", "v_proj", "fc_in"]
+        row_para_list = ["out_proj", "fc_out"]
+        tp_attr_list = ["num_attention_heads"]
         # manully set tp attribute
         # set_tp_layer_lists(input_output_mapping=input_output_mapping, tp_attr_list=tp_attr_list)
-        set_tp_layer_lists(col_para_list=col_para_list, row_para_list=row_para_list, 
-                           tp_attr_list=tp_attr_list)
+        set_tp_layer_lists(
+            col_para_list=col_para_list,
+            row_para_list=row_para_list,
+            tp_attr_list=tp_attr_list,
+        )
 
     # set model config
     config_kwarg = load_config(args.model_name)
@@ -71,17 +69,14 @@ def main():
     with init_empty_weights():
         model = GPTJForCausalLM(config)
 
-
     # Create a fake dataset for training
-    train_dataset = DynamicGenDataset(
-        model.config, mode="text_only", dataset_size=1e6
-    )
+    train_dataset = DynamicGenDataset(model.config, mode="text_only", dataset_size=1e6)
 
-    # using our distributed trainer        
+    # using our distributed trainer
     trainer = DynamicGenDataset(
         model=model,
         args=training_args,
-        train_dataset=train_dataset, 
+        train_dataset=train_dataset,
     )
 
     # Training

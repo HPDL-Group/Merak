@@ -15,21 +15,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Any, Dict, List, Optional, Set, Tuple, Type
+
 import torch
-
-from torch.fx.node import Node
 from torch.fx.graph_module import GraphModule
-from typing import Dict, List, Set, Any, Optional, Type, Tuple
+from torch.fx.node import Node
 
-from .split_module import split_module, Partition
+from .split_module import Partition, split_module
 
 
 def nearest_dependency_mapping(
-        m: GraphModule,
-        partition_name: str,
-        partitions: Partition,
-        total_params: int
-    ) -> Dict[str, Partition]:
+    m: GraphModule, partition_name: str, partitions: Partition, total_params: int
+) -> Dict[str, Partition]:
     min_deps_partitions: Dict[str, Partition] = {}
     new_partition_name = 0
     cur_partition_name = 0
@@ -44,31 +41,33 @@ def nearest_dependency_mapping(
         cur_partition = partitions[str(cur_partition_name)]
         new_partition = min_deps_partitions.get(str(new_partition_name))
         if new_partition is None:
-            min_deps_partitions[
+            min_deps_partitions[str(new_partition_name)] = new_partition = Partition(
                 str(new_partition_name)
-            ] = new_partition = Partition(str(new_partition_name))
+            )
         if len(new_partition.inputs) == 0 and new_partition_name != 0:
             new_partition.inputs = cur_partition.inputs
 
         next_partition_name = cur_partition_name + 1
-        next_partition = partitions[
-            str(next_partition_name)
-        ] if next_partition_name <= int(partition_name) else None
+        next_partition = (
+            partitions[str(next_partition_name)]
+            if next_partition_name <= int(partition_name)
+            else None
+        )
 
-        # 'get_attr' operation produces dtype obecjt which can not transfer 
-        # between stages, passing dtype using integer encoding could cause 
+        # 'get_attr' operation produces dtype obecjt which can not transfer
+        # between stages, passing dtype using integer encoding could cause
         # correctness problem in current engine implementation.
         for k, v in cur_partition.outputs.items():
-            if 'getattr' in k:# or 'add' in k:
-            # if 'getattr' in k:# or 'add' in k:
+            if "getattr" in k:  # or 'add' in k:
+                # if 'getattr' in k:# or 'add' in k:
                 flag = True
                 break
             flag = False
 
         if next_partition is not None:
             for k, v in next_partition.outputs.items():
-                if 'getattr' in k:# or 'add' in k:
-                # if 'getattr' in k:# or 'add' in k:
+                if "getattr" in k:  # or 'add' in k:
+                    # if 'getattr' in k:# or 'add' in k:
                     flag = True
                     break
                 flag = False
@@ -95,34 +94,34 @@ def nearest_dependency_mapping(
             if partition_count > new_partition_name:
                 break
             cur_partition = min_deps_partitions[str(partition_count)]
-        if hasattr(node, '_fx_partition'):
+        if hasattr(node, "_fx_partition"):
             node._fx_partition = cur_partition.name
     return min_deps_partitions
 
 
 def correctness_check(
-        gm: GraphModule,
-        node: Node,
-        nodes_so_far: List[str],
-        node_name_to_shard_id: Dict[str, int],
-        shard_id: int
-    ):
+    gm: GraphModule,
+    node: Node,
+    nodes_so_far: List[str],
+    node_name_to_shard_id: Dict[str, int],
+    shard_id: int,
+):
     # nodes should stay with their inplace operation.
-    # since Output 1 of CheckpointFunctionBackward is a view 
-    # and its base or another view of its base has been modified inplace. 
-    # This view is the output of a function that returns multiple views. 
-    # Such functions do not allow the output views to be modified inplace. 
-    if node.op == 'call_module':
+    # since Output 1 of CheckpointFunctionBackward is a view
+    # and its base or another view of its base has been modified inplace.
+    # This view is the output of a function that returns multiple views.
+    # Such functions do not allow the output views to be modified inplace.
+    if node.op == "call_module":
         for arg in node.args:
             if hasattr(gm, node.target):
                 mod = getattr(gm, node.target)
             else:
                 submod = gm
-                prefix = node.target.split('.')
+                prefix = node.target.split(".")
                 for item in prefix:
                     mod = getattr(submod, item, None)
                     submod = mod
-            if hasattr(mod, 'inplace'):
+            if hasattr(mod, "inplace"):
                 inplace_node_name = arg.name
                 inplace_shard_id = node_name_to_shard_id[inplace_node_name]
                 if shard_id > inplace_shard_id:
@@ -135,11 +134,11 @@ def correctness_check(
                                 else:
                                     shard_id = inplace_shard_id
                                     return shard_id
-    
+
     # module's weight and bias nodes should be in the same shard.
-    if node.op == 'get_attr':
+    if node.op == "get_attr":
         flag = False
-        if 'bias' in node.name:
+        if "bias" in node.name:
             module_name = node.name[:-4]
             for node_name in reversed(nodes_so_far):
                 if module_name in node_name:
@@ -148,7 +147,9 @@ def correctness_check(
                     if shard_id > module_weight_shard_id:
                         for node_name in reversed(nodes_so_far):
                             if node_name != module_weight_node_name:
-                                node_name_to_shard_id[node_name] = module_weight_shard_id
+                                node_name_to_shard_id[node_name] = (
+                                    module_weight_shard_id
+                                )
                             else:
                                 shard_id = module_weight_shard_id
                                 return shard_id
@@ -166,18 +167,20 @@ def avgnode_split_pass(gm: torch.fx.GraphModule, shard_nums: int) -> Dict[str, i
     shard_id = 0
 
     for node in mod_graph.nodes:
-        if node.op == 'call_module' or node.op == 'get_attr':
-            corrected_shard_id = correctness_check(gm, node, nodes_so_far, node_name_to_shard_id, shard_id)
+        if node.op == "call_module" or node.op == "get_attr":
+            corrected_shard_id = correctness_check(
+                gm, node, nodes_so_far, node_name_to_shard_id, shard_id
+            )
             if corrected_shard_id is not None:
                 shard_id = corrected_shard_id
-        if node.op == 'placeholder':
+        if node.op == "placeholder":
             node_name_to_shard_id[node.name] = 0
             nodes_so_far.append(node.name)
-        if node.op in ['get_attr', 'call_function', 'call_method', 'call_module']:
+        if node.op in ["get_attr", "call_function", "call_method", "call_module"]:
             node_name_to_shard_id[node.name] = shard_id
             accumulate_num_node += 1
             nodes_so_far.append(node.name)
-        elif node.op == 'output':
+        elif node.op == "output":
             nodes_so_far.append(node.name)
             break
         if accumulate_num_node >= avg_num_node:
@@ -185,24 +188,25 @@ def avgnode_split_pass(gm: torch.fx.GraphModule, shard_nums: int) -> Dict[str, i
             shard_id += 1
     return node_name_to_shard_id
 
+
 def nearest_deps_split(
-        traced_graph_module: GraphModule,
-        model: torch.nn.Module
-    ) -> Tuple[List[GraphModule], Dict[str, int]]:
+    traced_graph_module: GraphModule,
+    model: torch.nn.Module,
+    args,
+) -> Tuple[List[GraphModule], Dict[str, int]]:
     # get shard nums
     shard_nums = len(traced_graph_module.graph.nodes)
 
     # mapping node name to shard id
-    node_name_to_shard_id = avgnode_split_pass(
-        traced_graph_module, shard_nums
-    )
+    node_name_to_shard_id = avgnode_split_pass(traced_graph_module, shard_nums)
 
     # split graph
     module_list, func_inputs, partitions = split_module(
+        args,
         traced_graph_module,
         model,
         node_name_to_shard_id,
-        nearest_dependency_mapping
+        nearest_dependency_mapping,
     )
 
     return module_list, func_inputs

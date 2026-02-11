@@ -15,23 +15,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import Merak
 import torch
-
-from Merak import MerakArguments, MerakTrainer, init_empty_weights
 from config import load_config
-from transformers import (
-    set_seed,
-    HfArgumentParser,
-    T5ForConditionalGeneration,
-    T5Config,
-)
+from transformers import HfArgumentParser, T5Config, T5ForConditionalGeneration, set_seed
+
+import Merak
+from Merak import MerakArguments, MerakTrainer, init_empty_weights
 from Merak.utils.datasets import DynamicGenDataset
 
 
 # Add custom command-line arguments
 def parse_option(parser):
-    parser.add_argument('--model_name', type=str, help='Name of the model to load (e.g. gpt2)')
+    parser.add_argument(
+        "--model_name", type=str, help="Name of the model to load (e.g. gpt2)"
+    )
     return parser
 
 
@@ -60,9 +57,7 @@ def main():
         model = T5ForConditionalGeneration(config)
 
     # Create a fake dataset for training
-    train_dataset = DynamicGenDataset(
-        model.config, mode="condition", dataset_size=1e6
-    )
+    train_dataset = DynamicGenDataset(model.config, mode="condition", dataset_size=1e6)
 
     # Initialize trainer with model, training arguments and dataset
     trainer = MerakTrainer(

@@ -19,10 +19,16 @@
 
 """Model and data parallel groups."""
 
+import os
+
 import torch
+import torch.distributed as dist
 
-from .utils import ensure_divisibility
-
+from .topology import (
+    PipeDataSequenceModelParallelTopology,
+    PipelineParallelGrid,
+    MeshParallelGrid,
+)
 
 # Model parallel group that the current rank belongs to.
 _MODEL_PARALLEL_GROUP = None
@@ -44,15 +50,13 @@ _PP_NEXT_RANK = None
 
 def get_model_parallel_group():
     """Get the model parallel group the caller rank belongs to."""
-    assert _MODEL_PARALLEL_GROUP is not None, \
-        'model parallel group is not initialized'
+    assert _MODEL_PARALLEL_GROUP is not None, "model parallel group is not initialized"
     return _MODEL_PARALLEL_GROUP
 
 
 def get_data_parallel_group():
     """Get the data parallel group the caller rank belongs to."""
-    assert _DATA_PARALLEL_GROUP is not None, \
-        'data parallel group is not initialized'
+    assert _DATA_PARALLEL_GROUP is not None, "data parallel group is not initialized"
     return _DATA_PARALLEL_GROUP
 
 
@@ -101,18 +105,21 @@ def get_data_parallel_rank():
     """Return my rank for the data parallel group."""
     return torch.distributed.get_rank(group=get_data_parallel_group())
 
+
 # def get_topology():
 #     return _MPU_TOPOLOGY
 
+
 def get_pipe_parallel_group():
     """Get the pipe parallel group the caller rank belongs to."""
-    assert _PIPE_PARALLEL_GROUP is not None, \
-        'data parallel group is not initialized'
+    assert _PIPE_PARALLEL_GROUP is not None, "data parallel group is not initialized"
     return _PIPE_PARALLEL_GROUP
+
 
 def get_pipe_parallel_rank():
     """Return my rank for the pipe parallel group."""
     return torch.distributed.get_rank(group=get_pipe_parallel_group())
+
 
 def get_pipe_parallel_world_size():
     """Return world size for the pipe parallel group."""
@@ -123,6 +130,7 @@ def set_pipeline_model_parallel_prev_rank(prev_rank):
     global _PP_PREV_RANK
     _PP_PREV_RANK = prev_rank
 
+
 def set_pipeline_model_parallel_next_rank(next_rank):
     global _PP_NEXT_RANK
     _PP_NEXT_RANK = next_rank
@@ -132,9 +140,11 @@ def get_pipeline_model_parallel_prev_rank():
     global _PP_PREV_RANK
     return _PP_PREV_RANK
 
+
 def get_pipeline_model_parallel_next_rank():
     global _PP_NEXT_RANK
     return _PP_NEXT_RANK
+
 
 def destroy_model_parallel():
     """Set the groups to none."""
@@ -148,9 +158,11 @@ def set_pipe_parallel_group(group):
     global _PIPE_PARALLEL_GROUP
     _PIPE_PARALLEL_GROUP = group
 
+
 def set_model_parallel_group(group):
     global _MODEL_PARALLEL_GROUP
     _MODEL_PARALLEL_GROUP = group
+
 
 def set_data_parallel_group(group):
     global _DATA_PARALLEL_GROUP
@@ -160,23 +172,65 @@ def set_data_parallel_group(group):
 def is_pipeline_first_stage():
     return get_pipe_parallel_rank() == 0
 
+
 def is_pipeline_last_stage():
     return get_pipe_parallel_rank() == get_pipe_parallel_world_size() - 1
 
+
 def get_sequence_parallel_group():
     """Get the sequence parallel group the caller rank belongs to."""
-    assert _SEQUENCE_PARALLEL_GROUP is not None, \
-        'sequence parallel group is not initialized'
+    assert (
+        _SEQUENCE_PARALLEL_GROUP is not None
+    ), "sequence parallel group is not initialized"
     return _SEQUENCE_PARALLEL_GROUP
+
 
 def get_sequence_parallel_rank():
     """Return my rank for the sequence parallel group."""
     return torch.distributed.get_rank(group=get_sequence_parallel_group())
 
+
 def get_sequence_parallel_world_size():
     """Return world size for the sequence parallel group."""
     return torch.distributed.get_world_size(group=get_sequence_parallel_group())
 
+
 def set_sequence_parallel_group(group):
     global _SEQUENCE_PARALLEL_GROUP
     _SEQUENCE_PARALLEL_GROUP = group
+
+
+def set_topo_grid_communication():
+    # we init topology and communication grid here
+    # Get parallelism dim from enviroment
+    dp = int(os.environ.get("DP"))
+    pp = int(os.environ.get("PP"))
+    tp = int(os.environ.get("TP"))
+    sp = int(os.environ.get("SP"))
+
+    try:
+        # pylint: disable=import-outside-toplevel
+        from torch.distributed.device_mesh import init_device_mesh
+
+        device_mesh = init_device_mesh(
+            "cuda", (pp, dp, sp, tp), mesh_dim_names=("pp", "dp", "sp", "tp")
+        )
+
+        dp_mesh = device_mesh["dp"]
+        pp_mesh = device_mesh["pp"]
+        tp_mesh = device_mesh["tp"]
+        sp_mesh = device_mesh["sp"]
+        mesh_dict = {"dp": dp_mesh, "pp": pp_mesh, "tp": tp_mesh, "sp": sp_mesh}
+        communication_grid = MeshParallelGrid(mesh_dict=mesh_dict)
+    except ImportError:
+        topo = PipeDataSequenceModelParallelTopology(
+            num_pp=pp, num_dp=dp, num_sp=sp, num_mp=tp
+        )
+        communication_grid = PipelineParallelGrid(topo)
+
+    set_data_parallel_group(communication_grid.get_data_parallel_group())
+    set_model_parallel_group(communication_grid.get_slice_parallel_group())
+    set_pipe_parallel_group(communication_grid.get_pipe_parallel_group())
+    set_sequence_parallel_group(communication_grid.get_sequence_parallel_group())
+
+    return communication_grid

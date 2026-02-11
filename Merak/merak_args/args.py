@@ -15,49 +15,55 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-import sys
-import torch
-import time
 import contextlib
+import inspect
 import json
-import torch.distributed as dist
-
+import os
 from dataclasses import dataclass, field
-from typing import Any, Union, List, Optional, Dict
-from transformers import TrainingArguments, PretrainedConfig
-from transformers.file_utils import (
-    cached_property,
-    torch_only_method,
-)
+from typing import Any, Dict, List, Optional, Union
 
+import torch
+import torch.distributed as dist
+from packaging import version
+from transformers import PretrainedConfig, TrainingArguments
+from transformers.file_utils import torch_only_method
+
+try:
+    from transformers.file_utils import cached_property
+except ImportError:
+    from functools import cached_property
+
+
+from .. import get_logger
+from ..core import mpu
 
 _GLOBAL_ARGS = None
+
 
 @dataclass
 class MerakArguments(TrainingArguments):
     """
-    MerakArguments inherits from transformers.TrainingArguments (https://huggingface.co/docs/transformers/v4.15.0/en/main_classes/trainer) 
+    MerakArguments inherits from transformers.TrainingArguments (https://huggingface.co/docs/transformers/v4.15.0/en/main_classes/trainer)
     extending the arguments we need in 3D parallelism.
-    Using [`HfArgumentParser`] we can turn this class into [argparse](https://docs.python.org/3/library/argparse#module-argparse) 
+    Using [`HfArgumentParser`] we can turn this class into [argparse](https://docs.python.org/3/library/argparse#module-argparse)
     arguments that can be specified on the command line.
     Parameters:
     -   train_schedule (str, Optional,  defaults to '1f1b') -- Some possible choices are the pipe schedules as strings: '1f1b', 'ds_default','last_no_recompute_1f1b', 'shifted_critical_path'.
-    -   partition_method (str, Optional, defaults to 'uniform') -- Possible choices are the pipeline layer partion strategy as strings: 
+    -   partition_method (str, Optional, defaults to 'uniform') -- Possible choices are the pipeline layer partion strategy as strings:
         'uniform','uniform_floor','parameters'.
     -   split_method(str, Optional, defaults to 'farthest_min_deps') -- Possible choices are graph partion method as strings: 'farthest_min_deps','layer_split','nearest_min_deps'.
     -   custom_split_points(List(str), defaults to None) -- Create split points for layer_split method, default is None.
     -   trace_method(str, defaults to 'fx') -- None refers to no tracing, 'fx' refers to use torch.fx for tracing, 'dynamo' refers to use torch._dynamo for tracing.
     -   trace_model(str, Optional, defaults to '') -- Add new trace module. example: --trace_model 'Qwen2ForCausalLM'.
     -   init_method_std (float, defaults to 0.02) -- Standard deviation of the zero mean normal distribution used for tp weight initialization in Megatron
-    -   activation_checkpointing (bool, defaults to True) -- Whether to use activation checkpointing. 
+    -   activation_checkpointing (bool, defaults to True) -- Whether to use activation checkpointing.
     -   checkpoint_num_layers (int, defaults to 1) -- Chunk size (number of layers) for checkpointing.
-    -   input_names (List[str], Optional, defaults to None) -- The names of the inputs of the traced model. If unset, model.dummy_inputs().keys() are used instead. 
+    -   input_names (List[str], Optional, defaults to None) -- The names of the inputs of the traced model. If unset, model.dummy_inputs().keys() are used instead.
         Example: ['input_ids', 'attention_mask', 'token_type_ids']
     -   num_layers (int, Optional, defaults to None) -- Number of hidden layers in the Transformer, will try to get this in model config.
     -   seq_length (int, Optional, defaults to None) -- The maximum sequence length that this model might ever be used with, will try to get this in model config.
     -   num_heads (int, Optional, defaults to None) -- The number of heads that this model might ever be used with, will try to get this in model config. Defaults to None.
-    -   wall_clock_breakdown (bool, defaults to False) -- Whether to log detail time spend on each rank. 
+    -   wall_clock_breakdown (bool, defaults to False) -- Whether to log detail time spend on each rank.
     -   shard_count (int, Optional, defaults to None) -- Number of shards that model needs to be break, will be training_args.num_layers*2 if not set.
     -   prescale_gradients (bool, defaults to False) -- Whether to enable gradient prescaling.
     -   gradient_predivide_factor (float, defaults to 1.0) -- Gradient predivide factor in gradient prescaling.
@@ -73,7 +79,6 @@ class MerakArguments(TrainingArguments):
     -   no_load_optim (bool, defaults to False) -- Do not load current optimizer.
     -   split_inputs (bool, defaults to False) -- Whether to split input data.
     -   parallel_vocab (bool, defaults to False) -- Whether to parallel vocabulary when TMP > 1.
-    -   sequence_parallel (bool, defaults to False) -- Whether to use sequence parallel when TMP > 1.
     -   sequence_dim (int, defaults to 1) -- Sequence length dimension in hidden states.
     -   dealloc_pipeoutput (bool, defaults to False) -- Whether to dealloc pipeline sended activation output.
     -   activation_checkpoint_ratio (float, Optional, defaults to None) -- activation checkpoint ratio of first stage, in range(0,1). Default to None.
@@ -105,162 +110,155 @@ class MerakArguments(TrainingArguments):
         default="1f1b",
         metadata={
             "help": "Possible choices are the pipe schedules as strings:"
-                    "`1f1b`, `ds_default`, `pre_recompute_1f1b`, "
-                    "`ds_default`,  `last_no_recompute_1f1b`, "
-                    "`full_critical_path_1f1b, shifted_critical_path`,"
-                    " Defaults to `1f1b`.",
+            "`1f1b`, `ds_default`, `pre_recompute_1f1b`, "
+            "`ds_default`,  `last_no_recompute_1f1b`, "
+            "`full_critical_path_1f1b, shifted_critical_path`,"
+            " Defaults to `1f1b`.",
         },
     )
     partition_method: str = field(
         default="uniform_floor",
         metadata={
             "help": "Possible choices are the pipeline layer partion strategy "
-                    "as strings: 'uniform','uniform_floor', 'parameters'."
-                    "Defaults to 'uniform'.",
+            "as strings: 'uniform','uniform_floor', 'parameters'."
+            "Defaults to 'uniform'.",
         },
     )
     split_method: str = field(
         default="nearest_min_deps",
         metadata={
             "help": "Possible choices are graph partion method "
-                    "as strings: 'farthest_min_deps','layer_split',"
-                    "'nearest_min_deps'.",
+            "as strings: 'farthest_min_deps','layer_split',"
+            "'nearest_min_deps'.",
         },
     )
     custom_split_points: Optional[List[str]] = field(
         default=None,
         metadata={
-            "help": "Create split points for layer_split method, "
-                    "default is None",
+            "help": "Create split points for layer_split method, " "default is None",
         },
     )
     trace_method: str = field(
-        default='fx',
+        default="fx",
         metadata={
             "help": "None refers to no tracing;"
-                    "'fx' refers to use torch.fx for tracing;"
-                    "'dynamo' refers to use torch._dynamo for tracing."
+            "'fx' refers to use torch.fx for tracing;"
+            "'dynamo' refers to use torch._dynamo for tracing."
         },
     )
     trace_model: Optional[str] = field(
-        default='',
+        default="",
         metadata={
             "help": "Add new trace module. example: --trace_model 'Qwen2ForCausalLM'"
         },
     )
     init_method_std: float = field(
-        default=0.02, 
+        default=0.02,
         metadata={
             "help": "Standard deviation of the zero mean normal distribution"
-                    "used for TP weight initialization in Megatron."
-                    "Defaults to 0.02."
+            "used for TP weight initialization in Megatron."
+            "Defaults to 0.02."
         },
     )
     activation_checkpointing: bool = field(
         default=True,
         metadata={
-            "help": "Whether to use activation checkpointing."
-                    "Defaults to True."
+            "help": "Whether to use activation checkpointing." "Defaults to True."
         },
     )
     checkpoint_num_layers: int = field(
-        default=1, 
+        default=1,
         metadata={
             "help": "chunk size (number of layers) for checkpointing."
-                    "0 means disable activation checkpoint."
-                    "Defaults to 1"
+            "0 means disable activation checkpoint."
+            "Defaults to 1"
         },
     )
     input_names: Optional[List[str]] = field(
-        default=None, 
+        default=None,
         metadata={
             "help": "The names of the inputs of the traced model."
-                    "If unset, model.dummy_inputs().keys() are used instead."
-                    "Example: ['input_ids', 'attention_mask', 'token_type_ids']"
+            "If unset, model.dummy_inputs().keys() are used instead."
+            "Example: ['input_ids', 'attention_mask', 'token_type_ids']"
         },
     )
     num_layers: Optional[int] = field(
-        default=None, 
+        default=None,
         metadata={
             "help": "Number of hidden layers in the Transformer,"
-                    "will try to get or eval this in model config."
-                    "Defaults to None."
+            "will try to get or eval this in model config."
+            "Defaults to None."
         },
     )
     seq_length: Optional[int] = field(
-        default=None, 
+        default=None,
         metadata={
             "help": "The maximum sequence length that this model might ever be "
-                    "used with, will try to get this in model config."
-                    "Defaults to None."
+            "used with, will try to get this in model config."
+            "Defaults to None."
         },
     )
     hidden_size: Optional[int] = field(
         default=None,
         metadata={
             "help": "The hidden size that this model might ever be "
-                    "used with, will try to get this in model config."
-                    "Defaults to None."
+            "used with, will try to get this in model config."
+            "Defaults to None."
         },
     )
     num_heads: Optional[int] = field(
         default=None,
         metadata={
             "help": "The number of heads that this model might ever be "
-                    "used with, will try to get this in model config."
-                    "Defaults to None."
+            "used with, will try to get this in model config."
+            "Defaults to None."
         },
     )
     wall_clock_breakdown: bool = field(
         default=True,
         metadata={
-            "help": "Whether to log detail time spend on each rank."
-                    "Defaults to False"
+            "help": "Whether to log detail time spend on each rank." "Defaults to False"
         },
     )
     shard_count: Optional[int] = field(
-        default=None, 
+        default=None,
         metadata={
             "help": "Number of shards that model needs to be break."
-                    "It will be training_args.num_layers*2 if not set."
-                    "Defaults to None."
+            "It will be training_args.num_layers*2 if not set."
+            "Defaults to None."
         },
     )
     prescale_gradients: bool = field(
         default=False,
-        metadata={
-            "help": "Whether to enable gradient prescaling."
-                    "Defaults to False"
-        },
+        metadata={"help": "Whether to enable gradient prescaling." "Defaults to False"},
     )
     gradient_predivide_factor: float = field(
-        default=1.0, 
+        default=1.0,
         metadata={
-            "help": "Gradient predivide factor in gradient prescaling."
-                    "Defaults to 1"
+            "help": "Gradient predivide factor in gradient prescaling." "Defaults to 1"
         },
     )
     cache_sharding: bool = field(
         default=False,
         metadata={
             "help": "Whether to cache the partitioned graphs of model with"
-                    "microbatch size."
-                    "Defaults to False"
+            "microbatch size."
+            "Defaults to False"
         },
     )
     cache_name: Optional[str] = field(
-        default=None, 
+        default=None,
         metadata={
             "help": "Set the cache name of partitioned graphs,"
-                    "must be setted when cache_sharding is True."
-                    "Defaults to None"
+            "must be setted when cache_sharding is True."
+            "Defaults to None"
         },
     )
     return_logits: bool = field(
         default=False,
         metadata={
             "help": "Whether to return logits and labels in evaluation."
-                    "Defaults to False"
+            "Defaults to False"
         },
     )
     # zero arguments
@@ -275,126 +273,125 @@ class MerakArguments(TrainingArguments):
         default=None,
         metadata={
             "help": "Set the stage of zero optimizer."
-                    "Only support zero stage 1 currently."
-                    "Defaults to None."
+            "Only support zero stage 1 currently."
+            "Defaults to None."
         },
     )
     zero_allgather_bucket_size: float = field(
         default=500000000,
         metadata={
             "help": "Set the all gather partition size for zero stage 1"
-                    "optimization."
-                    "Defaults to 500000000."
+            "optimization."
+            "Defaults to 500000000."
         },
     )
     zero_reduce_bucket_size: float = field(
         default=500000000,
         metadata={
             "help": "Set the reduce bucket size(max_elems_per_comm) for zero "
-                    "stage 1 optimization."
-                    "Defaults to 500000000."
+            "stage 1 optimization."
+            "Defaults to 500000000."
+        },
+    )
+    zero_reshard: str = field(
+        default="",
+        metadata={
+            "help": (
+                "Path to a consolidated optimizer state dict (e.g., from merged ZeRO checkpoints). "
+                "If provided, optimizer will load state from this file. "
+                "Leave empty to skip loading."
+            )
         },
     )
     # checkpoint arguments
     save: bool = field(
         default=False,
-        metadata={
-            "help": "Whether to save checkpoints."
-                    "Defaults to False."
-        },
+        metadata={"help": "Whether to save checkpoints." "Defaults to False."},
     )
     finetune: bool = field(
         default=False,
         metadata={
             "help": "Load model for finetuning. Do not load optimizer "
-                    "or rng state from checkpoint and set iteration to 0."
-                    "Defaults to False."
+            "or rng state from checkpoint and set iteration to 0."
+            "Defaults to False."
         },
     )
     no_save_rng: bool = field(
         default=False,
-        metadata={
-            "help": "Do not save current rng state"
-                    "Defaults to False."
-        },
+        metadata={"help": "Do not save current rng state" "Defaults to False."},
     )
     no_save_optim: bool = field(
         default=False,
-        metadata={
-            "help": "Do not save current optimizer"
-                    "Defaults to False."
-        },
+        metadata={"help": "Do not save current optimizer" "Defaults to False."},
     )
     no_load_optim: bool = field(
         default=False,
         metadata={
             "help": "Do not load optimizer when loading checkpoint."
-                    "Defaults to False."
+            "Defaults to False."
         },
     )
     no_load_rng: bool = field(
         default=False,
         metadata={
             "help": "Do not load rng state when loading checkpoint."
-                    "Defaults to False."
+            "Defaults to False."
         },
+    )
+    load_lastest: bool = field(
+        default=False,
+        metadata={"help": "Do load lastest checkpoint." "Defaults to False."},
+    )
+
+    # dataloader
+    consumed_samples: int = field(
+        default=0,
+        metadata={"help": "how many consumed samples." "Defaults to 0."},
     )
 
     # split input
     split_inputs: bool = field(
         default=False,
-        metadata={
-            "help": "Whether to split input data"
-                    "Defaults to False."
-        },
+        metadata={"help": "Whether to split input data" "Defaults to False."},
     )
     parallel_vocab: bool = field(
         default=False,
         metadata={
-            "help": "Whether to parallel vocabulary when TMP > 1"
-                    "Defaults to False."
-        },
-    )
-    sequence_parallel: bool = field(
-        default=False,
-        metadata={
-            "help": "Whether to use sequence parallel when TMP > 1"
-                    "Defaults to False."
+            "help": "Whether to parallel vocabulary when TMP > 1" "Defaults to False."
         },
     )
     sequence_dim: int = field(
         default=1,
         metadata={
-            "help": "Sequence length dimension in hidden states"
-                    "Defaults to False."
+            "help": "Sequence length dimension in hidden states" "Defaults to False."
         },
     )
     dealloc_pipeoutput: bool = field(
         default=False,
         metadata={
             "help": "Whether to dealloc pipeline sended activation output"
-                    "Defaults to False."
+            "Defaults to False."
         },
     )
     activation_checkpoint_ratio: Optional[List[str]] = field(
-        default=None, 
+        default=None,
         metadata={
             "help": "activation checkpoint ratio of first stage,"
-                    "in range(0,1) for each pipeline stage."
-                    "Default to None."
+            "in range(0,1) for each pipeline stage."
+            "Default to None."
         },
     )
     tp_overlapping_level: int = field(
         default=0,
         metadata={
             "help": "Possible tensor parallelism communication overlapping "
-                    "level from 0 to 3. 0 refers to no overlapping;"
-                    "1 refers to only overlap within linear function;"
-                    "2 refers to overlap within transformer blocks, requires "
-                    "rewrite transformer blocks; 3 refers to overlap between "
-                    "transformer blocks, requires rewrite transformer model."
-                    "Default to 0.",
-            "choices": [0,1,2,3],
+            "level from 0 to 3. 0 refers to no overlapping;"
+            "1 refers to only overlap within linear function;"
+            "2 refers to overlap within transformer blocks, requires "
+            "rewrite transformer blocks; 3 refers to overlap between "
+            "transformer blocks, requires rewrite transformer model."
+            "Default to 0.",
+            "choices": [0, 1, 2, 3],
         },
     )
 
@@ -407,47 +404,47 @@ class MerakArguments(TrainingArguments):
         },
     )
     loss_scale: float = field(
-        default=0.,
+        default=0.0,
         metadata={
             "help": "loss_scale is a fp16 parameter representing the loss "
-                    "scaling value for FP16 training. The default value of 0.0 "
-                    "results in dynamic loss scaling, otherwise the value will "
-                    "be used for static fixed loss scaling."
-                    "Default to 0.",
+            "scaling value for FP16 training. The default value of 0.0 "
+            "results in dynamic loss scaling, otherwise the value will "
+            "be used for static fixed loss scaling."
+            "Default to 0.",
         },
     )
     initial_scale_power: int = field(
         default=32,
         metadata={
             "help": "initial_scale_power is a fp16 parameter representing the "
-                    "power of the initial dynamic loss scale value.The actual "
-                    "loss scale is computed as 2^initial_scale_power."
-                    "Default to 32.",
+            "power of the initial dynamic loss scale value.The actual "
+            "loss scale is computed as 2^initial_scale_power."
+            "Default to 32.",
         },
     )
     loss_scale_window: int = field(
         default=1000,
         metadata={
             "help": "loss_scale_window is a fp16 parameter representing the "
-                    "window over which to raise/lower the dynamic loss scale "
-                    "value."
-                    "Default to 1000.",
+            "window over which to raise/lower the dynamic loss scale "
+            "value."
+            "Default to 1000.",
         },
     )
     hysteresis: int = field(
         default=2,
         metadata={
             "help": "hysteresis is a fp16 parameter representing the delay "
-                    "shift in dynamic loss scaling."
-                    "Default to 2.",
+            "shift in dynamic loss scaling."
+            "Default to 2.",
         },
     )
     min_loss_scale: int = field(
         default=1,
         metadata={
             "help": "min_loss_scale is a fp16 parameter representing the "
-                    "minimum dynamic loss scale value."
-                    "Default to 1.",
+            "minimum dynamic loss scale value."
+            "Default to 1.",
         },
     )
 
@@ -455,23 +452,19 @@ class MerakArguments(TrainingArguments):
         default=None,
         metadata={
             "help": "Customize the partition size of the model. Length of list "
-                    "is pipeline_world_size + 1."
-                    "Example: [0, 6, 12, 18, 26, ..., last_layer_idx]"
-                    "Default to None.",
+            "is pipeline_world_size + 1."
+            "Example: [0, 6, 12, 18, 26, ..., last_layer_idx]"
+            "Default to None.",
         },
     )
     no_tie_modules: bool = field(
         default=False,
-        metadata={
-            "help": "Whether to set tie modules."
-            "Default to False."
-        },
+        metadata={"help": "Whether to set tie modules." "Default to False."},
     )
     save_total_limit: int = field(
         default=-1,
         metadata={
-            "help": 'Limit the max numbers of checkpoints.'
-            "Default to -1.",
+            "help": "Limit the max numbers of checkpoints." "Default to -1.",
         },
     )
 
@@ -479,33 +472,60 @@ class MerakArguments(TrainingArguments):
         default=1024,
         metadata={
             "help": "The maximum sequence length that this model's output."
-                    "Defaults to 1024."
+            "Defaults to 1024."
         },
     )
     temperature: float = field(
         default=0.9,
-        metadata={
-            "help": "Sampling temperature"
-                    "Defaults to 0.9."
-        },
+        metadata={"help": "Sampling temperature" "Defaults to 0.9."},
     )
 
     # peft
     lora_config: str = field(
         default=None,
-        metadata={
-            "help": "Set lora config path"
-                    "Defaults to None."
-        },
+        metadata={"help": "Set lora config path" "Defaults to None."},
     )
     adapter_name: str = field(
         default="default",
         metadata={
             "help": "The name of the adapter to be injected, if not provided, "
-                    "the default adapter name is used ('default')."
-                    "Defaults to 'default'."
+            "the default adapter name is used ('default')."
+            "Defaults to 'default'."
         },
     )
+
+    # redundancy check
+    check_steps: Optional[List[int]] = field(
+        default=None,
+        metadata={
+            "help": "Steps to check redundancy.",
+        },
+    )
+    ada_checkpoint: bool = field(
+        default=False,
+        metadata={
+            "help": "Whether to use adaptive checkpoint saver." "Defaults to False."
+        },
+    )
+    use_differential: bool = field(
+        default=False,
+        metadata={
+            "help": "Whether to use use_differential save method." "Defaults to False."
+        },
+    )
+    differential_interval: int = field(
+        default=3,
+        metadata={
+            "help": "The interval steps of differential save method." "Defaults to 3."
+        },
+    )
+
+    # original pytorch tp
+    pytorch_tp: bool = field(
+        default=False,
+        metadata={"help": "Whether to use pytorch tp." "Defaults to False."},
+    )
+
     def get_lora_config(self):
         with open(self.lora_config, "r") as f:
             lora_kwargs = json.load(f)
@@ -513,10 +533,19 @@ class MerakArguments(TrainingArguments):
             lora_kwargs.pop("auto_mapping")
         return lora_kwargs
 
+    def get_communication_grid(self):
+        # First need init process group
+        communication_grid = mpu.set_topo_grid_communication()
+        return communication_grid
 
     @cached_property
     @torch_only_method
     def _setup_devices(self) -> "torch.device":
+        self.distributed_state = None
+        dp = int(os.environ["DP"])
+        pp = int(os.environ["PP"])
+        tp = int(os.environ["TP"])
+        sp = int(os.environ["SP"])
 
         if os.getenv("LOCAL_RANK"):
             self.local_rank = int(os.environ["LOCAL_RANK"])
@@ -524,22 +553,45 @@ class MerakArguments(TrainingArguments):
             self.local_rank = int(os.environ["SLURM_LOCALID"])
         else:
             raise ValueError("Please set env LOCAL_RANK or SLURM_LOCALID")
-        
-        if not torch.cuda.is_available():
+
+        if not torch.cuda.is_available() or self.use_cpu:
             self.use_cpu = True
-            device = torch.device('cpu')
+            device = torch.device("cpu")
+            backend = "mpi"
         else:
-            assert self.local_rank != -1, \
-                'only support distributed training/evaluation for now'
+            assert (
+                self.local_rank != -1
+            ), "only support distributed training/evaluation for now"
             device = torch.device("cuda", self.local_rank)
 
             if device.type == "cuda":
                 torch.cuda.set_device(device)
+            backend = "nccl"
+
+        if ('device_id' in inspect.signature(dist.init_process_group).parameters.keys()
+            and not version.parse("2.6.0") < version.parse(torch.__version__) < version.parse("2.7.1")):
+            device_id = device if sp == 1 else None
+        else:
+            device_id = None
+
+        if not dist.is_initialized():
+            dist.init_process_group(backend, device_id=device_id)
+            # First need init process group
+            _ = self.get_communication_grid()
+
+        if dist.get_rank() == 0:
+            print(
+                f"Pipeline Model Parallel Size: {pp} "
+                f"\nTensor Model Parallel Size: {tp} "
+                f"\nSequence Parallel Size: {sp} "
+                f"\nData Parallel Size: {dp} \n",
+                flush=True,
+            )
 
         return device
-    
+
     @contextlib.contextmanager
-    def main_process_first(local=False, desc="work"):
+    def main_process_first(self, local=False, desc="work"):
         """
         A context manager for torch distributed environment where on needs to do something on the main process, while
         blocking replicas, and when it's finished releasing the replicas.
@@ -563,25 +615,30 @@ class MerakArguments(TrainingArguments):
             main_process_desc = "main local process" if local else "main process"
 
             try:
-                if not dist.get_rank() == 0:
+                if dist.get_rank() != 0:
                     # tell all replicas to wait
                     # logger.info(f"{dist.get_rank()}: waiting for the {main_process_desc} to perform {desc}")
-                    print(f"{dist.get_rank()}: waiting for the {main_process_desc} to perform {desc}")
+                    print(
+                        f"{dist.get_rank()}: waiting for the {main_process_desc} to perform {desc}"
+                    )
                     dist.barrier()
                 yield
             finally:
                 if dist.get_rank() == 0:
                     # the wait is over
                     # logger.info(f"{dist.get_rank()}: {main_process_desc} completed {desc}, releasing all replicas")
-                    print(f"{dist.get_rank()}: {main_process_desc} completed {desc}, releasing all replicas")
+                    print(
+                        f"{dist.get_rank()}: {main_process_desc} completed {desc}, releasing all replicas"
+                    )
                     dist.barrier()
         else:
             yield
 
+
 def manual_set_args(args: MerakArguments):
     global _GLOBAL_ARGS
     # some args for megatron
-    if hasattr(args,'fp16') and args.fp16:
+    if hasattr(args, "fp16") and args.fp16:
         args.params_dtype = torch.half
     else:
         args.params_dtype = torch.float32
@@ -591,52 +648,65 @@ def manual_set_args(args: MerakArguments):
 
 def get_args() -> MerakArguments:
     """Return arguments."""
-    assert _GLOBAL_ARGS is not None, '{} is not initialized.'.format('args')
+    assert _GLOBAL_ARGS is not None, "{} is not initialized.".format("args")
     return _GLOBAL_ARGS
 
 
 args_dict = {
-    "seq_length": ['seq_length', 'max_position_embeddings', 'n_positions', 'embed_dim',
-                   'max_target_positions'],
-    "num_heads": ['num_attention_heads', 'n_head', 'num_heads'],
-    "hidden_size": ['hidden_size', 'dim', 'n_embd', 'd_model', 'hidden_sizes'],
-    "num_layers": ['num_hidden_layers', 'n_layers', 'num_layers'],
+    "seq_length": [
+        "seq_length",
+        "max_position_embeddings",
+        "n_positions",
+        "embed_dim",
+        "max_target_positions",
+    ],
+    "num_heads": ["num_attention_heads", "n_head", "num_heads"],
+    "hidden_size": ["hidden_size", "dim", "n_embd", "d_model", "hidden_sizes"],
+    "num_layers": ["num_hidden_layers", "n_layers", "num_layers"],
 }
 
 
-def mergeargs(training_args: MerakArguments, model_config: Union[PretrainedConfig, dict]):
-    training_args.DDP_impl = 'local'
+def mergeargs(
+    training_args: MerakArguments, model_config: Union[PretrainedConfig, dict]
+):
+    logger = get_logger("simple")
+    training_args.DDP_impl = "local"
     if not training_args.input_names:
         training_args.input_names = None
 
-    if hasattr(model_config, 'vision_config'):
-        training_args.num_layers = model_config.text_config.num_hidden_layers + \
-                                        model_config.vision_config.num_hidden_layers
-        training_args.num_heads = [model_config.text_config.num_attention_heads,
-                                   model_config.vision_config.num_attention_heads]
-    if hasattr(model_config, 'decoder_layers'):
-        if hasattr(model_config, 'encoder_layers'):
-            training_args.num_layers = model_config.decoder_layers + \
-                                        model_config.encoder_layers
+    if hasattr(model_config, "vision_config"):
+        training_args.num_layers = (
+            model_config.text_config.num_hidden_layers
+            + model_config.vision_config.num_hidden_layers
+        )
+        training_args.num_heads = [
+            model_config.text_config.num_attention_heads,
+            model_config.vision_config.num_attention_heads,
+        ]
+    if hasattr(model_config, "decoder_layers"):
+        if hasattr(model_config, "encoder_layers"):
+            training_args.num_layers = (
+                model_config.decoder_layers + model_config.encoder_layers
+            )
             training_args.num_heads = [
                 model_config.decoder_attention_heads,
-                model_config.encoder_attention_heads
+                model_config.encoder_attention_heads,
             ]
         else:
             training_args.num_layers = model_config.decoder_layers
             training_args.num_heads = model_config.decoder_attention_heads
 
-        if hasattr(model_config, 'num_conv_layers'):
+        if hasattr(model_config, "num_conv_layers"):
             training_args.num_layers += model_config.num_conv_layers
 
-    if hasattr(model_config, 'depths'):
+    if hasattr(model_config, "depths"):
         training_args.num_layers = sum(model_config.depths)
-    if hasattr(model_config, 'true_hidden_size'):
+    if hasattr(model_config, "true_hidden_size"):
         training_args.hidden_size = model_config.true_hidden_size
 
     for n, name_list in args_dict.items():
         if getattr(training_args, n) is None:
-            model_config = getattr(model_config, 'text_config', model_config)
+            model_config = getattr(model_config, "text_config", model_config)
             for name in name_list:
                 if hasattr(model_config, name):
                     values = getattr(model_config, name)
@@ -650,27 +720,29 @@ def mergeargs(training_args: MerakArguments, model_config: Union[PretrainedConfi
 
     if training_args.shard_count is None:
         if isinstance(training_args.num_layers, dict):
-            training_args.shard_count = sum(list(training_args.num_layers.values())) * 2 + 4
+            training_args.shard_count = (
+                sum(list(training_args.num_layers.values())) * 2 + 4
+            )
         elif training_args.num_layers is not None:
-            training_args.shard_count = training_args.num_layers*2 + 4
+            training_args.shard_count = training_args.num_layers * 2 + 4
         else:
             training_args.shard_count = 3
 
-    if training_args.train_schedule == 'shifted_critical_path':
-        training_args.train_schedule = 'full_critical_path_1f1b'
+    if training_args.train_schedule == "shifted_critical_path":
+        training_args.train_schedule = "full_critical_path_1f1b"
 
     if training_args.activation_checkpointing == False:
         training_args.checkpoint_num_layers = 0
 
-    if torch.distributed.get_rank()==0 and training_args.wall_clock_breakdown:
-        print('------------------------ arguments ------------------------',
-              flush=True)
-        str_list = []
-        for arg in vars(training_args):
-            dots = '.' * (48 - len(arg))
-            str_list.append('  {} {} {}'.format(arg, dots,
-                                                getattr(training_args, arg)))
-        for arg in sorted(str_list, key=lambda x: x.lower()):
-            print(arg, flush=True)
-        print('-------------------- end of arguments ---------------------',
-              flush=True)
+    logger.info(
+        "------------------------ arguments ------------------------", ranks=[0]
+    )
+    str_list = []
+    for arg in vars(training_args):
+        dots = "." * (48 - len(arg))
+        str_list.append("  {} {} {}".format(arg, dots, getattr(training_args, arg)))
+    for arg in sorted(str_list, key=lambda x: x.lower()):
+        logger.info(arg, ranks=[0])
+    logger.info(
+        "-------------------- end of arguments ---------------------", ranks=[0]
+    )

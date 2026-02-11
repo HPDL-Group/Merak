@@ -20,37 +20,44 @@
 """Model parallel utility interface."""
 
 from .cross_entropy import vocab_parallel_cross_entropy
-
-from .initialize import destroy_model_parallel
-from .initialize import get_data_parallel_group
-from .initialize import get_data_parallel_rank
-from .initialize import get_data_parallel_world_size
-from .initialize import get_model_parallel_group
-from .initialize import get_model_parallel_rank, set_model_parallel_rank
-from .initialize import get_model_parallel_src_rank
-from .initialize import get_model_parallel_world_size, set_model_parallel_world_size
-from .initialize import get_pipe_parallel_group
-from .initialize import get_pipe_parallel_rank
-from .initialize import get_pipe_parallel_world_size
-from .initialize import get_pipeline_model_parallel_prev_rank
-from .initialize import get_pipeline_model_parallel_next_rank
-from .initialize import is_pipeline_first_stage, is_pipeline_last_stage
-from .initialize import get_sequence_parallel_group, get_sequence_parallel_rank
-from .initialize import get_sequence_parallel_world_size, set_sequence_parallel_group
-
-from .layers import LayerNorm
-from .layers import ColumnParallelLinear
-from .layers import RowParallelLinear
-from .layers import VocabParallelEmbedding
-from .layers import ColParallelConv2d
-
-from .mappings import copy_to_model_parallel_region
-from .mappings import gather_from_model_parallel_region
-from .mappings import reduce_from_model_parallel_region
-from .mappings import scatter_to_model_parallel_region
-from .mappings import all_to_all_sequence_parallel_region
-from .mappings import split_for_sequence_parallel_region
-from .mappings import gather_for_sequence_parallel_region
-
-from .utils import divide
-from .utils import split_tensor_along_last_dim
+from .initialize import (
+    destroy_model_parallel,
+    get_data_parallel_group,
+    get_data_parallel_rank,
+    get_data_parallel_world_size,
+    get_model_parallel_group,
+    get_model_parallel_rank,
+    get_model_parallel_src_rank,
+    get_model_parallel_world_size,
+    get_pipe_parallel_group,
+    get_pipe_parallel_rank,
+    get_pipe_parallel_world_size,
+    get_pipeline_model_parallel_next_rank,
+    get_pipeline_model_parallel_prev_rank,
+    get_sequence_parallel_group,
+    get_sequence_parallel_rank,
+    get_sequence_parallel_world_size,
+    is_pipeline_first_stage,
+    is_pipeline_last_stage,
+    set_model_parallel_rank,
+    set_model_parallel_world_size,
+    set_sequence_parallel_group,
+    set_topo_grid_communication,
+)
+from .layers import (
+    ColParallelConv2d,
+    ColumnParallelLinear,
+    LayerNorm,
+    RowParallelLinear,
+    VocabParallelEmbedding,
+)
+from .mappings import (
+    all_to_all_sequence_parallel_region,
+    copy_to_model_parallel_region,
+    gather_for_sequence_parallel_region,
+    gather_from_model_parallel_region,
+    reduce_from_model_parallel_region,
+    scatter_to_model_parallel_region,
+    split_for_sequence_parallel_region,
+)
+from .utils import divide, split_tensor_along_last_dim

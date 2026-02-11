@@ -16,27 +16,29 @@
 # limitations under the License.
 
 import os
+
 import torch
-import Merak
-
-from Merak import MerakArguments, MerakTrainer, print_rank_0, init_empty_weights
-from Merak.core import mpu
 from config import load_config
-
-from transformers.models.llama.modeling_llama import LlamaAttention
 from transformers import (
+    HfArgumentParser,
+    LlamaConfig,
+    LlamaForCausalLM,
     default_data_collator,
     set_seed,
-    HfArgumentParser,
-    LlamaForCausalLM,
-    LlamaConfig
 )
+from transformers.models.llama.modeling_llama import LlamaAttention
+
+import Merak
+from Merak import MerakArguments, MerakTrainer, init_empty_weights
+from Merak.core import mpu
 from Merak.utils.datasets import DynamicGenDataset
 
 
 # Add custom command-line arguments
 def parse_option(parser):
-    parser.add_argument('--model_name', type=str, help='Name of the model to load (e.g. gpt2)')
+    parser.add_argument(
+        "--model_name", type=str, help="Name of the model to load (e.g. gpt2)"
+    )
     return parser
 
 
@@ -60,39 +62,45 @@ def main():
     if tp > 1:
         from Merak.core.tensor_parallel.mp_attrs import set_tp_layer_lists
 
-        col_para_list = ['self_attn.q_proj', 'self_attn.k_proj', 'self_attn.v_proj',
-                         'gate_proj', 'up_proj']
-        row_para_list = ['self_attn.o_proj', 'down_proj']
-        tp_attr_list=['num_heads', 'num_key_value_heads']  
+        col_para_list = [
+            "self_attn.q_proj",
+            "self_attn.k_proj",
+            "self_attn.v_proj",
+            "gate_proj",
+            "up_proj",
+        ]
+        row_para_list = ["self_attn.o_proj", "down_proj"]
+        tp_attr_list = ["num_heads", "num_key_value_heads"]
         # manully set tp attribute
-        set_tp_layer_lists(col_para_list=col_para_list, row_para_list=row_para_list, tp_attr_list=tp_attr_list)
+        set_tp_layer_lists(
+            col_para_list=col_para_list,
+            row_para_list=row_para_list,
+            tp_attr_list=tp_attr_list,
+        )
 
     # set model config
     config_kwarg = load_config(args.model_name)
-    config = LlamaConfig(
-            **config_kwarg
-        )
-    config._attn_implementation="eager"
+    config = LlamaConfig(**config_kwarg)
+    config._attn_implementation = "eager"
 
     # meta init model
     with init_empty_weights():
         model = LlamaForCausalLM(config)
-    model.generation_config.pad_token_id=-100
+    model.generation_config.pad_token_id = -100
 
     # Create a fake dataset for training
-    train_dataset = DynamicGenDataset(
-        model.config, mode="text_only", dataset_size=1e6
-    )
-        
+    train_dataset = DynamicGenDataset(model.config, mode="text_only", dataset_size=1e6)
+
     # Initialize our Trainer
     trainer = MerakTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
-        leaf_modules=(LlamaAttention,)
+        leaf_modules=(LlamaAttention,),
     )
-        
+
     trainer.train()
+
 
 if __name__ == "__main__":
     main()

@@ -2,9 +2,7 @@ def load_config(model_name):
     if model_name == "mt5-base":
         config = {
             "_name_or_path": "/home/patrick/hugging_face/t5/mt5-base",
-            "architectures": [
-                "MT5ForConditionalGeneration"
-            ],
+            "architectures": ["MT5ForConditionalGeneration"],
             "d_ff": 2048,
             "d_kv": 64,
             "d_model": 768,
@@ -26,8 +24,8 @@ def load_config(model_name):
             "tokenizer_class": "T5Tokenizer",
             "transformers_version": "4.10.0.dev0",
             "use_cache": False,
-            "vocab_size": 250112
-            }
+            "vocab_size": 250112,
+        }
     else:
         raise ValueError(f"No {model_name} config")
     return config

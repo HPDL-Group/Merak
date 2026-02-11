@@ -4,17 +4,12 @@ def load_config(model_name):
             "_name_or_path": "hf_models_fb/s2t-medium-librispeech-asr/",
             "activation_dropout": 0.15,
             "activation_function": "relu",
-            "architectures": [
-                "Speech2TextForConditionalGeneration"
-            ],
+            "architectures": ["Speech2TextForConditionalGeneration"],
             "attention_dropout": 0.15,
             "bos_token_id": 0,
             "classifier_dropout": 0.0,
             "conv_channels": 1024,
-            "conv_kernel_sizes": [
-                5,
-                5
-            ],
+            "conv_kernel_sizes": [5, 5],
             "d_model": 512,
             "decoder_attention_heads": 8,
             "decoder_ffn_dim": 2048,
@@ -44,9 +39,9 @@ def load_config(model_name):
             "scale_embedding": True,
             "transformers_version": "4.4.0.dev0",
             "use_cache": False,
-            'return_dict': False,
-            "vocab_size": 10000
-            }
+            "return_dict": False,
+            "vocab_size": 10000,
+        }
     else:
         raise ValueError(f"No {model_name} config")
     return config

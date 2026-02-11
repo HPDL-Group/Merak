@@ -4,39 +4,13 @@ def load_config(model_name):
             "_name_or_path": "facebook/hubert-base-ls960",
             "activation_dropout": 0.1,
             "apply_spec_augment": True,
-            "architectures": [
-                "HubertModel"
-            ],
+            "architectures": ["HubertModel"],
             "attention_dropout": 0.1,
             "bos_token_id": 1,
             "conv_bias": False,
-            "conv_dim": [
-                512,
-                512,
-                512,
-                512,
-                512,
-                512,
-                512
-            ],
-            "conv_kernel": [
-                10,
-                3,
-                3,
-                3,
-                3,
-                2,
-                2
-            ],
-            "conv_stride": [
-                5,
-                2,
-                2,
-                2,
-                2,
-                2,
-                2
-            ],
+            "conv_dim": [512, 512, 512, 512, 512, 512, 512],
+            "conv_kernel": [10, 3, 3, 3, 3, 2, 2],
+            "conv_stride": [5, 2, 2, 2, 2, 2, 2],
             "ctc_loss_reduction": "sum",
             "ctc_zero_infinity": False,
             "do_stable_layer_norm": False,
@@ -68,10 +42,10 @@ def load_config(model_name):
             "pad_token_id": 0,
             "transformers_version": "4.10.0.dev0",
             "vocab_size": 32,
-            'return_dict': False,
+            "return_dict": False,
             "use_cache": False,
-            "tokenizer_class": "Wav2Vec2CTCTokenizer"
-            }
+            "tokenizer_class": "Wav2Vec2CTCTokenizer",
+        }
     else:
         raise ValueError(f"No {model_name} config")
     return config

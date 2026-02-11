@@ -15,23 +15,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import torch
-import Merak
-
-from Merak import MerakArguments, MerakTrainer, init_empty_weights
-from config import load_config
 from typing import Union
 
-from transformers import (
-    set_seed,
-    HubertForCTC,
-    HubertConfig,
-    HfArgumentParser,
-)
+import torch
+from config import load_config
+from transformers import HfArgumentParser, HubertConfig, HubertForCTC, set_seed
+
+import Merak
+from Merak import MerakArguments, MerakTrainer, init_empty_weights
 from Merak.utils.datasets import DynamicGenDataset
 
 
-def _get_feat_extract_output_lengths(config, input_lengths: Union[torch.LongTensor, int]):
+def _get_feat_extract_output_lengths(
+    config, input_lengths: Union[torch.LongTensor, int]
+):
     """
     Computes the output length of the convolutional layers
     """
@@ -46,9 +43,12 @@ def _get_feat_extract_output_lengths(config, input_lengths: Union[torch.LongTens
 
     return input_lengths
 
+
 # Add custom command-line arguments
 def parse_option(parser):
-    parser.add_argument('--model_name', type=str, help='Name of the model to load (e.g. gpt2)')
+    parser.add_argument(
+        "--model_name", type=str, help="Name of the model to load (e.g. gpt2)"
+    )
     return parser
 
 
@@ -59,7 +59,7 @@ def main():
     tp = 1
     dp = 1
     Merak.init(pp, tp, dp)
-    
+
     hfparser = HfArgumentParser(MerakArguments)
     parser = parse_option(hfparser)
     training_args, args = parser.parse_args_into_dataclasses()
@@ -76,10 +76,13 @@ def main():
 
     # Create a fake dataset for training
     eval_datasets = DynamicGenDataset(
-        model.config, mode="speech", dataset_size=1e6, seq_length=training_args.seq_length
+        model.config,
+        mode="speech",
+        dataset_size=1e6,
+        seq_length=training_args.seq_length,
     )
 
-    #eval for tracing
+    # eval for tracing
     model.eval()
 
     class HubertTrainer(MerakTrainer):
@@ -89,12 +92,22 @@ def main():
                 if isinstance(labels, tuple):
                     labels = labels[0]
                 if labels.max() >= config.vocab_size:
-                        raise ValueError(f"Label values must be <= vocab_size: {config.vocab_size}")
+                    raise ValueError(
+                        f"Label values must be <= vocab_size: {config.vocab_size}"
+                    )
 
                 # retrieve loss input_lengths from attention_mask
                 attention_mask = None
                 attention_mask = (
-                    attention_mask if attention_mask is not None else torch.ones([training_args.per_device_eval_batch_size, self.args.seq_length], dtype=torch.long)
+                    attention_mask
+                    if attention_mask is not None
+                    else torch.ones(
+                        [
+                            training_args.per_device_eval_batch_size,
+                            self.args.seq_length,
+                        ],
+                        dtype=torch.long,
+                    )
                 )
                 input_lengths = _get_feat_extract_output_lengths(
                     config, attention_mask.sum(-1)
@@ -122,9 +135,10 @@ def main():
                         zero_infinity=config.ctc_zero_infinity,
                     )
                 return loss
+
             return loss_fn
 
-    # using our distributed trainer        
+    # using our distributed trainer
     trainer = HubertTrainer(
         model=model,
         args=training_args,

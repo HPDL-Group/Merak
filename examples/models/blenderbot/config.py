@@ -6,9 +6,7 @@ def load_config(model_name):
             "activation_function": "gelu",
             "add_bias_logits": False,
             "add_final_layer_norm": True,
-            "architectures": [
-                "BlenderbotForConditionalGeneration"
-            ],
+            "architectures": ["BlenderbotForConditionalGeneration"],
             "attention_dropout": 0.0,
             "bos_token_id": 1,
             "classif_dropout": 0.0,
@@ -32,18 +30,10 @@ def load_config(model_name):
             "force_bos_token_to_be_generated": False,
             "forced_eos_token_id": 2,
             "gradient_checkpointing": False,
-            "id2label": {
-                "0": "LABEL_0",
-                "1": "LABEL_1",
-                "2": "LABEL_2"
-            },
+            "id2label": {"0": "LABEL_0", "1": "LABEL_1", "2": "LABEL_2"},
             "init_std": 0.02,
             "is_encoder_decoder": True,
-            "label2id": {
-                "LABEL_0": 0,
-                "LABEL_1": 1,
-                "LABEL_2": 2
-            },
+            "label2id": {"LABEL_0": 0, "LABEL_1": 1, "LABEL_2": 2},
             "layernorm_variant": "prelayernorm",
             "length_penalty": 0.65,
             "max_length": 60,
@@ -61,6 +51,6 @@ def load_config(model_name):
             "transformers_version": "4.13.0.dev0",
             "unk_token_id": 3,
             "use_cache": True,
-            "vocab_size": 8008
-            }
+            "vocab_size": 8008,
+        }
     return config

@@ -15,23 +15,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import Merak
-
-from Merak import MerakArguments, MerakTrainer, init_empty_weights
-from config import load_config
-
-from transformers import (
-    set_seed,
-    Dinov2ForImageClassification,
-    Dinov2Config,
-    HfArgumentParser,
-)
 import torch
+from config import load_config
+from transformers import Dinov2Config, Dinov2ForImageClassification, HfArgumentParser, set_seed
+
+import Merak
+from Merak import MerakArguments, MerakTrainer, init_empty_weights
 from Merak.utils.datasets import DynamicGenDataset
+
 
 # Add custom command-line arguments
 def parse_option(parser):
-    parser.add_argument('--model_name', type=str, help='Name of the model to load (e.g. gpt2)')
+    parser.add_argument(
+        "--model_name", type=str, help="Name of the model to load (e.g. gpt2)"
+    )
     return parser
 
 
@@ -42,7 +39,7 @@ def main():
     tp = 2
     dp = 1
     Merak.init(pp, tp, dp)
-    
+
     hfparser = HfArgumentParser(MerakArguments)
     parser = parse_option(hfparser)
     training_args, args = parser.parse_args_into_dataclasses()
@@ -50,13 +47,16 @@ def main():
     if tp > 1:
         from Merak.core.tensor_parallel.mp_attrs import set_tp_layer_lists
 
-        col_para_list = ['query', 'key', 'value', 'fc1']
-        row_para_list = ['output.dense', 'fc2']
-        tp_attr_list = ['num_attention_heads', 'all_head_size']
+        col_para_list = ["query", "key", "value", "fc1"]
+        row_para_list = ["output.dense", "fc2"]
+        tp_attr_list = ["num_attention_heads", "all_head_size"]
 
         # manully set tp attribute for swin model
-        set_tp_layer_lists(col_para_list=col_para_list, row_para_list=row_para_list, 
-                           tp_attr_list=tp_attr_list)
+        set_tp_layer_lists(
+            col_para_list=col_para_list,
+            row_para_list=row_para_list,
+            tp_attr_list=tp_attr_list,
+        )
 
     # Set seed before initializing model.
     set_seed(training_args.seed)
@@ -68,20 +68,22 @@ def main():
     # Initialize model
     with init_empty_weights():
         model = Dinov2ForImageClassification(config)
-    
-    training_args.seq_length = model.config.image_size
 
+    training_args.seq_length = model.config.image_size
 
     # Create a fake dataset for training
     train_dataset = DynamicGenDataset(
-        model.config, mode="vision_only", dataset_size=1e6, image_size=model.config.image_size
+        model.config,
+        mode="vision_only",
+        dataset_size=1e6,
+        image_size=model.config.image_size,
     )
 
-    # using our distributed trainer        
+    # using our distributed trainer
     trainer = MerakTrainer(
         model=model,
         args=training_args,
-        train_dataset=train_dataset, 
+        train_dataset=train_dataset,
     )
 
     # Training

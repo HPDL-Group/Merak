@@ -17,30 +17,34 @@
 
 # Parts of the code here are adapted from https://github.com/microsoft/DeepSpeed/blob/85acf14c58658964a796c5c901b58123f99fb1df/deepspeed/runtime/utils.py
 
-import os
-import psutil
 import gc
+import os
 from math import sqrt
-from typing import List, Tuple, Union, Optional
 from types import ModuleType
+from typing import List, Optional, Tuple, Union
 
+import psutil
 import torch
+
 try:
     from torch._six import inf
 except ImportError:
     from torch import inf
+
 import torch.distributed as dist
 from torch.autograd.variable import Variable
+
 
 def noop_decorator(func):
     return func
 
+
 def clip_grad_norm_(
-        parameters: Union[torch.Tensor, List[torch.Tensor]],
-        max_norm: int,
-        norm_type: int = 2,
-        mpu: Optional[ModuleType] = None
-    ) -> torch.Tensor:
+    parameters: Union[torch.Tensor, List[torch.Tensor]],
+    max_norm: int,
+    norm_type: int = 2,
+    mpu: Optional[ModuleType] = None,
+) -> torch.Tensor:
     """Clips gradient norm of an iterable of parameters.
 
     This has been adapted from Nvidia megatron. We add norm averaging
@@ -71,29 +75,32 @@ def clip_grad_norm_(
         total_norm_cuda = torch.FloatTensor([float(total_norm)]).cuda()
         # Take max across all GPUs.
         if mpu is not None:
-            torch.distributed.all_reduce(total_norm_cuda,
-                                         op=torch.distributed.ReduceOp.MAX,
-                                         group=mpu.get_model_parallel_group())
+            torch.distributed.all_reduce(
+                total_norm_cuda,
+                op=torch.distributed.ReduceOp.MAX,
+                group=mpu.get_model_parallel_group(),
+            )
         total_norm = total_norm_cuda[0].item()
     else:
         total_norm = 0
         for p in parameters:
             if mpu is not None:
-                if (mpu.get_model_parallel_rank()
-                        == 0):
+                if mpu.get_model_parallel_rank() == 0:
                     param_norm = p.grad.data.norm(norm_type)
-                    total_norm += param_norm.item()**norm_type
+                    total_norm += param_norm.item() ** norm_type
             else:
                 param_norm = p.grad.data.float().norm(norm_type)
-                total_norm += param_norm.item()**norm_type
+                total_norm += param_norm.item() ** norm_type
 
         # Sum across all model parallel GPUs.
         total_norm_cuda = torch.FloatTensor([float(total_norm)]).cuda()
         if mpu is not None:
-            torch.distributed.all_reduce(total_norm_cuda,
-                                         op=torch.distributed.ReduceOp.SUM,
-                                         group=mpu.get_model_parallel_group())
-        total_norm = total_norm_cuda[0].item()**(1. / norm_type)
+            torch.distributed.all_reduce(
+                total_norm_cuda,
+                op=torch.distributed.ReduceOp.SUM,
+                group=mpu.get_model_parallel_group(),
+            )
+        total_norm = total_norm_cuda[0].item() ** (1.0 / norm_type)
 
     # Need to average total_norm across different GPUs due to the presence of
     # moe params
@@ -109,89 +116,95 @@ def clip_grad_norm_(
         for p in parameters:
             p.grad.data.mul_(clip_coef)
     return total_norm
-    
+
+
 def custom_backward(
-        output: Union[List[torch.Tensor], torch.Tensor],
-        grad_output: Union[List[torch.Tensor], torch.Tensor]
-    ):
-    '''Directly call C++ autograd engine.
+    output: Union[List[torch.Tensor], torch.Tensor],
+    grad_output: Union[List[torch.Tensor], torch.Tensor],
+):
+    """Directly call C++ autograd engine.
 
     To make the 'deallocate_output_tensor' (above) optimization work, the C++
     autograd engine must be called directly, bypassing Pytorch's
     torch.autograd.backward. Pytorch's 'backward' checks that the output and
     grad have the same shape, while C++'s 'backward' does not.
-    '''
+    """
     if isinstance(output, list):
         for idx in range(len(output)):
-            assert output[idx].numel() == 1, \
-                "output should be pseudo-'freed' in schedule, \
+            assert (
+                output[idx].numel() == 1
+            ), "output should be pseudo-'freed' in schedule, \
                  to optimize memory"
-            assert isinstance(output[idx], torch.Tensor), \
+            assert isinstance(output[idx], torch.Tensor), (
                 "output == '%s'." % type(output[idx]).__name__
-            assert isinstance(grad_output[idx], (torch.Tensor, type(None))), \
+            )
+            assert isinstance(grad_output[idx], (torch.Tensor, type(None))), (
                 "grad_output == '%s'." % type(grad_output[idx]).__name__
+            )
 
             # Handle scalar output
             if grad_output[idx] is None:
-                assert output[idx].numel() == 1, \
-                    "implicit grad requires scalar output."
+                assert output[idx].numel() == 1, "implicit grad requires scalar output."
                 grad_output[idx] = torch.ones_like(
                     output[idx],
-                    memory_format = torch.preserve_format,
+                    memory_format=torch.preserve_format,
                 )
         # Call c++ engine [ see torch/csrc/autograd/python_engine.cpp ]
         Variable._execution_engine.run_backward(
-            tensors = tuple(output),
-            grad_tensors = tuple(grad_output),
-            keep_graph = False,
-            create_graph = False,
-            inputs = tuple(),
+            tensors=tuple(output),
+            grad_tensors=tuple(grad_output),
+            keep_graph=False,
+            create_graph=False,
+            inputs=tuple(),
             allow_unreachable=True,
             accumulate_grad=True,
         )
     else:
-        assert output.numel() == 1, \
-            "output should be pseudo-'freed' in schedule, to optimize memory"
-        assert isinstance(output, torch.Tensor), \
+        assert (
+            output.numel() == 1
+        ), "output should be pseudo-'freed' in schedule, to optimize memory"
+        assert isinstance(output, torch.Tensor), (
             "output == '%s'." % type(output[0]).__name__
-        assert isinstance(grad_output, (torch.Tensor, type(None))), \
+        )
+        assert isinstance(grad_output, (torch.Tensor, type(None))), (
             "grad_output == '%s'." % type(grad_output).__name__
+        )
         # Handle scalar output
         if grad_output is None:
             assert output.numel() == 1, "implicit grad requires scalar output."
             grad_output = torch.ones_like(
                 output,
-                memory_format = torch.preserve_format,
+                memory_format=torch.preserve_format,
             )
 
         # Call c++ engine [ see torch/csrc/autograd/python_engine.cpp ]
         Variable._execution_engine.run_backward(
-            tensors = (output, ),
-            grad_tensors = (grad_output, ),
-            keep_graph = False,
-            create_graph = False,
-            inputs = tuple(),
+            tensors=(output,),
+            grad_tensors=(grad_output,),
+            keep_graph=False,
+            create_graph=False,
+            inputs=tuple(),
             allow_unreachable=True,
             accumulate_grad=True,
         )
 
 
 def deallocate_output_tensor(out: torch.Tensor):
-    '''Pseudo-deallocate (i.e., set to scalar) the output tensor's '.data'
+    """Pseudo-deallocate (i.e., set to scalar) the output tensor's '.data'
     field.
 
     This method should be called right after the output tensor has been
     sent to the next pipeline stage. At this point, the output tensor is
     only useful for its '.grad_fn' field, and not its '.data'.
-    '''
+    """
     if out is None:
         return
-    assert isinstance(out, torch.Tensor), \
+    assert isinstance(out, torch.Tensor), (
         "expected Tensor, found %s." % type(out).__name__
-    assert out._base is None, \
-        "counter-productive to free a view of another tensor."
+    )
+    assert out._base is None, "counter-productive to free a view of another tensor."
     out.data = torch.empty(
         (1,),
-        device = out.device,
-        dtype = out.dtype,
+        device=out.device,
+        dtype=out.dtype,
     )

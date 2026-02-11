@@ -17,16 +17,13 @@
 
 # Parts of the code here are adapted from https://github.com/hpcaitech/ColossalAI/blob/main/colossalai/fx/passes/split_module.py
 
-import torch
-
-from collections import ChainMap
-from torch.fx import Node
-from torch.fx._compatibility import compatibility
-from torch.fx.graph_module import GraphModule
 from collections import ChainMap
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from Merak.merak_args import get_args
+import torch
+from torch.fx import Node
+from torch.fx._compatibility import compatibility
+from torch.fx.graph_module import GraphModule
 
 
 @compatibility(is_backward_compatible=True)
@@ -47,23 +44,26 @@ class Partition:
         self.targets: Dict[str, Any] = {}
 
     def __repr__(self) -> str:
-        return f"name: {self.name},\n" \
-            f" nodes: {self.node_names},\n" \
-            f" inputs: {self.inputs},\n" \
-            f" outputs: {self.outputs},\n" \
-            f" partitions dependent on: {self.partitions_dependent_on},\n" \
+        return (
+            f"name: {self.name},\n"
+            f" nodes: {self.node_names},\n"
+            f" inputs: {self.inputs},\n"
+            f" outputs: {self.outputs},\n"
+            f" partitions dependent on: {self.partitions_dependent_on},\n"
             f" partition dependents: {self.partition_dependents}"
+        )
 
 
 # Creates subgraphs out of main graph
 @compatibility(is_backward_compatible=True)
 def split_module(
-        m: GraphModule,
-        root_m: torch.nn.Module,
-        split_callback: Callable[[torch.fx.node.Node], int],
-        merge_nearest=None,
-        total_params=None
-    ) -> Tuple[List[GraphModule], Dict[str, int]]:
+    args,
+    m: GraphModule,
+    root_m: torch.nn.Module,
+    split_callback: Callable[[torch.fx.node.Node], int],
+    merge_nearest=None,
+    total_params=None,
+) -> Tuple[List[GraphModule], Dict[str, int]]:
     """
     Adapted from https://github.com/pytorch/pytorch/blob/master/torch/fx/passes/split_module.py
     Creates subgraphs out of main graph
@@ -140,15 +140,17 @@ def split_module(
     partitions: Dict[str, Partition] = {}
     orig_nodes: Dict[str, torch.fx.node.Node] = {}
     func_inputs: Dict[Node, int] = {}
-    args = get_args()
     submod_list = []
     min_deps_partitions: Dict[str, Partition] = {}
 
-    def record_cross_partition_use(def_node: torch.fx.node.Node,
-                                   use_node: Optional[torch.fx.node.Node], output=False):
+    def record_cross_partition_use(
+        def_node: torch.fx.node.Node,
+        use_node: Optional[torch.fx.node.Node],
+        output=False,
+    ):
 
-        def_partition_name = getattr(def_node, '_fx_partition', None)
-        use_partition_name = getattr(use_node, '_fx_partition', None)
+        def_partition_name = getattr(def_node, "_fx_partition", None)
+        use_partition_name = getattr(use_node, "_fx_partition", None)
 
         if def_partition_name != use_partition_name:
             if def_partition_name is not None:
@@ -164,7 +166,9 @@ def split_module(
                     use_partition.partitions_dependent_on.setdefault(def_partition_name)
 
                     # calculate if cross partition node exist
-                    cross_patition_length = int(use_partition_name) - int(def_partition_name)
+                    cross_patition_length = int(use_partition_name) - int(
+                        def_partition_name
+                    )
                     # cross partition node exist
                     if cross_patition_length > 1:
                         prev_partition_idx = int(use_partition_name) - 1
@@ -178,9 +182,13 @@ def split_module(
                             cur_need_idx = int(use_partition_name)
                             for idx in range(cur_need_idx, most_beginning_idx, -1):
                                 if idx > most_beginning_idx + 1:
-                                    partitions[str(idx)].inputs.setdefault(def_node.name)
+                                    partitions[str(idx)].inputs.setdefault(
+                                        def_node.name
+                                    )
                                 if idx < cur_need_idx:
-                                    partitions[str(idx)].outputs.setdefault(def_node.name)
+                                    partitions[str(idx)].outputs.setdefault(
+                                        def_node.name
+                                    )
         if output:
             # set the correct output for the partition before the last partition,
             # in case this partition holds the node that need to be emitted by the last partition,
@@ -197,23 +205,26 @@ def split_module(
 
     # split nodes into partitions
     for node in m.graph.nodes:
-        if args.trace_method == 'dynamo' and not args.use_cpu:
-            if 'device' in node.kwargs.keys():
+        if args.trace_method == "dynamo" and not args.use_cpu:
+            if "device" in node.kwargs.keys():
                 change_kwargs = node.kwargs.copy()
-                change_kwargs['device'] = torch.device('cuda')
+                change_kwargs["device"] = torch.device("cuda")
                 node.kwargs = change_kwargs
         orig_nodes[node.name] = node
 
-        if node.op == 'output':
+        if node.op == "output":
             # torch.fx.graph.map_arg(node.args[0], lambda n: record_cross_partition_use(n, None))
             torch.fx.graph.map_arg(
                 node.args[0],
-                lambda n: record_cross_partition_use(n, node.prev, output=True)
+                lambda n: record_cross_partition_use(n, node.prev, output=True),
             )
             continue
 
-        partition_name = str(split_callback[node.name]) \
-            if type(split_callback) == dict else str(split_callback(node))
+        partition_name = (
+            str(split_callback[node.name])
+            if type(split_callback) == dict
+            else str(split_callback(node))
+        )
 
         if node.op == "placeholder":
             func_inputs[node.name] = int(partition_name)
@@ -227,13 +238,11 @@ def split_module(
         node._fx_partition = partition_name
 
         torch.fx.graph.map_arg(
-            node.args,
-            lambda def_node: record_cross_partition_use(def_node, node)
+            node.args, lambda def_node: record_cross_partition_use(def_node, node)
         )
         torch.fx.graph.map_arg(
-            node.kwargs,
-            lambda def_node: record_cross_partition_use(def_node, node)
-        )    # noqa: B950
+            node.kwargs, lambda def_node: record_cross_partition_use(def_node, node)
+        )  # noqa: B950
 
     # find partitions with no dependencies
     root_partitions: List[str] = []
@@ -267,35 +276,39 @@ def split_module(
 
     # Transform nodes and collect targets for partition's submodule
     for node in m.graph.nodes:
-        if hasattr(node, '_fx_partition'):
+        if hasattr(node, "_fx_partition"):
             partition = min_deps_partitions[node._fx_partition]
 
             # swap out old graph nodes in kw/args with references to new nodes in this submodule
             environment = partition.environment
-            
-            gathered_args = torch.fx.graph.map_arg(node.args, lambda n: environment[n])
-            gathered_kwargs = torch.fx.graph.map_arg(node.kwargs, lambda n: environment[n])
 
-            if node.op not in ['call_module', 'get_attr']:
+            gathered_args = torch.fx.graph.map_arg(node.args, lambda n: environment[n])
+            gathered_kwargs = torch.fx.graph.map_arg(
+                node.kwargs, lambda n: environment[n]
+            )
+
+            if node.op not in ["call_module", "get_attr"]:
                 target = node.target
             else:
-                target_atoms = node.target.split('.')
+                target_atoms = node.target.split(".")
                 target_attr = m
                 for atom in target_atoms:
                     if not hasattr(target_attr, atom):
-                        raise RuntimeError(f'Operator target {node.target} not found!')
+                        raise RuntimeError(f"Operator target {node.target} not found!")
                     target_attr = getattr(target_attr, atom)
                 # target = target_atoms[-1]
-                target = '.'.join(target_atoms)
+                target = ".".join(target_atoms)
                 partition.targets[target] = target_attr
 
             assert isinstance(gathered_args, tuple)
             assert isinstance(gathered_kwargs, dict)
-            new_node = partition.graph.create_node(op=node.op,
-                                                   target=target,
-                                                   args=gathered_args,
-                                                   kwargs=gathered_kwargs,
-                                                   name=node.name)
+            new_node = partition.graph.create_node(
+                op=node.op,
+                target=target,
+                args=gathered_args,
+                kwargs=gathered_kwargs,
+                name=node.name,
+            )
 
             # new_node = partition.graph.node_copy(node, lambda n: environment[n])
             partition.environment[node] = new_node
@@ -315,13 +328,16 @@ def split_module(
                 all_new_node_map[orig_nodes[name]] for name in partition.outputs
             )
 
-        output_vals = output_vals[0] \
-            if len(output_vals) == 1 else output_vals # type: ignore[assignment]
+        output_vals = (
+            output_vals[0] if len(output_vals) == 1 else output_vals
+        )  # type: ignore[assignment]
 
         partition.graph.output(output_vals)
 
         submod = torch.fx.graph_module.GraphModule(
-            partition.targets if args.trace_method == 'dynamo' else root_m, partition.graph)
+            partition.targets if args.trace_method == "dynamo" else root_m,
+            partition.graph,
+        )
 
         submod_list.append(submod)
 

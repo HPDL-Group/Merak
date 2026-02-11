@@ -16,23 +16,25 @@
 # limitations under the License.
 
 import torch
-import Merak
-
-from Merak import MerakArguments, MerakTrainer, init_empty_weights
 from transformers import (
     DataCollatorForLanguageModeling,
-    set_seed,
-    XGLMForCausalLM,
-    XGLMConfig,
     HfArgumentParser,
+    XGLMConfig,
+    XGLMForCausalLM,
+    set_seed,
 )
-
 from transformers.modeling_attn_mask_utils import AttentionMaskConverter
+
+import Merak
+from Merak import MerakArguments, MerakTrainer, init_empty_weights
 from Merak.utils.datasets import DynamicGenDataset
+
 
 # Add custom command-line arguments
 def parse_option(parser):
-    parser.add_argument('--model_name', type=str, help='Name of the model to load (e.g. gpt2)')
+    parser.add_argument(
+        "--model_name", type=str, help="Name of the model to load (e.g. gpt2)"
+    )
     return parser
 
 
@@ -43,7 +45,7 @@ def main():
     tp = 1
     dp = 1
     Merak.init(pp, tp, dp)
-    
+
     # merge args
     hfparser = HfArgumentParser(MerakArguments)
     parser = parse_option(hfparser)
@@ -52,25 +54,27 @@ def main():
     if tp > 1:
         from Merak.core.tensor_parallel.mp_attrs import set_tp_layer_lists
 
-        col_para_list = ['q_proj', 'k_proj', 'v_proj', 'fc1']
-        row_para_list = ['out_proj', 'fc2']
-        tp_attr_list = ['num_heads']
+        col_para_list = ["q_proj", "k_proj", "v_proj", "fc1"]
+        row_para_list = ["out_proj", "fc2"]
+        tp_attr_list = ["num_heads"]
 
         # manully set tp attribute for swin model
-        set_tp_layer_lists(col_para_list=col_para_list, row_para_list=row_para_list, 
-                           tp_attr_list=tp_attr_list)
+        set_tp_layer_lists(
+            col_para_list=col_para_list,
+            row_para_list=row_para_list,
+            tp_attr_list=tp_attr_list,
+        )
 
     # Set seed before initializing model.
     set_seed(training_args.seed)
 
-
     # set model config
     # config_kwarg = load_config(args.model_name)
     config_kwarg = {
-        'max_position_embeddings': 512,
-        'num_layers': 8,
-        'return_dict': False,
-        'use_cache': False
+        "max_position_embeddings": 512,
+        "num_layers": 8,
+        "return_dict": False,
+        "use_cache": False,
     }
     config = XGLMConfig(**config_kwarg)
 
@@ -81,16 +85,14 @@ def main():
     model.eval()
 
     # Create a fake dataset for training
-    eval_dataset = DynamicGenDataset(
-        model.config, mode="text_only", dataset_size=1e6
-    )
+    eval_dataset = DynamicGenDataset(model.config, mode="text_only", dataset_size=1e6)
 
-    # using our distributed trainer        
+    # using our distributed trainer
     trainer = MerakTrainer(
         model=model,
         args=training_args,
         eval_dataset=eval_dataset,
-        leaf_modules=(AttentionMaskConverter,)
+        leaf_modules=(AttentionMaskConverter,),
         # Data collator will default to DataCollatorWithPadding, so we change it.
         # data_collator=data_collator,
     )

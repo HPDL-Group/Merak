@@ -1,0 +1,42 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+#
+# Modified from original source.
+# Original: https://github.com/meta-pytorch/torchft-8ef24c055ebb495caf39fb2acdbddb8ebcebdf19/blob/main/torchft/multiprocessing.py
+# Modifications Copyright (c) 2026.
+
+import queue
+import time
+from datetime import timedelta
+from multiprocessing.connection import Connection
+from typing import Union
+
+import torch.multiprocessing as mp
+
+
+class _MonitoredPipe:
+    def __init__(self, pipe: "Connection[object, object]") -> None:  # type: ignore
+        self._pipe = pipe
+
+    def send(self, obj: object) -> None:
+        self._pipe.send(obj)
+
+    def recv(self, timeout: Union[float, timedelta]) -> object:
+        if isinstance(timeout, timedelta):
+            timeout = timeout.total_seconds()
+        if self._pipe.poll(timeout):
+            out = self._pipe.recv()
+            if isinstance(out, Exception):
+                raise out
+            return out
+        else:
+            raise TimeoutError(f"pipe.recv() timed out after {timeout} seconds")
+
+    def close(self) -> None:
+        self._pipe.close()
+
+    def closed(self) -> bool:
+        return self._pipe.closed

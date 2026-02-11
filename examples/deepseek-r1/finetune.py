@@ -15,30 +15,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import torch
-import Merak
 import os
+from typing import Any, Callable, Dict, Optional, Tuple, Union
+
 import pandas as pd
-
-from Merak import MerakArguments, MerakTrainer, print_rank_0, init_empty_weights
+import torch
 from datasets import Dataset, load_dataset
-from typing import Any, Dict, Tuple, Optional, Callable, Union
-
-from transformers.optimization import AdamW
-from transformers.models.llama.modeling_llama import LlamaAttention
 from transformers import (
     AutoConfig,
-    AutoModelForCausalLM, 
-    AutoTokenizer, 
-    set_seed,
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    DataCollatorForSeq2Seq,
     HfArgumentParser,
-    DataCollatorForSeq2Seq
+    set_seed,
 )
+from transformers.models.llama.modeling_llama import LlamaAttention
+from transformers.optimization import AdamW
+
+import Merak
+from Merak import MerakArguments, MerakTrainer, init_empty_weights
+
 
 # Add custom command-line arguments
 def parse_option(parser):
-    parser.add_argument('--data_path', type=str, help='path to dataset')
-    parser.add_argument('--model_path', type=str, help='path to model')
+    parser.add_argument("--data_path", type=str, help="path to dataset")
+    parser.add_argument("--model_path", type=str, help="path to model")
     return parser
 
 
@@ -74,7 +75,7 @@ def process_data(data: dict, tokenizer, max_seq_length):
             input_text,
             add_special_tokens=False,
             truncation=True,
-            padding=False, 
+            padding=False,
             return_tensors=None,
         )
         output_tokenizer = tokenizer(
@@ -84,29 +85,37 @@ def process_data(data: dict, tokenizer, max_seq_length):
             padding=False,
             return_tensors=None,
         )
-        
+
         if tokenizer.eos_token_id is None:
             raise ValueError("Tokenizer does not have an EOS token ID!")
-        
+
         input_ids += (
-            input_tokenizer["input_ids"] + output_tokenizer["input_ids"] + [tokenizer.eos_token_id]
+            input_tokenizer["input_ids"]
+            + output_tokenizer["input_ids"]
+            + [tokenizer.eos_token_id]
         )
-        attention_mask += input_tokenizer["attention_mask"] + output_tokenizer["attention_mask"] + [1]
+        attention_mask += (
+            input_tokenizer["attention_mask"] + output_tokenizer["attention_mask"] + [1]
+        )
         labels += (
-            [-100] * len(input_tokenizer["input_ids"]) + output_tokenizer["input_ids"] + [tokenizer.eos_token_id]
+            [-100] * len(input_tokenizer["input_ids"])
+            + output_tokenizer["input_ids"]
+            + [tokenizer.eos_token_id]
         )
 
     # Padding
     seq_length = len(input_ids)
     if seq_length < max_seq_length:
         pad_length = max_seq_length - seq_length
-        pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+        pad_token_id = (
+            tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+        )
 
-        if tokenizer.padding_side == "right":  
+        if tokenizer.padding_side == "right":
             input_ids.extend([pad_token_id] * pad_length)
             attention_mask.extend([1] * pad_length)
             labels.extend([pad_token_id] * pad_length)
-        else: 
+        else:
             input_ids = [pad_token_id] * pad_length + input_ids
             attention_mask = [1] * pad_length + attention_mask
             labels = [pad_token_id] * pad_length + labels
@@ -116,18 +125,15 @@ def process_data(data: dict, tokenizer, max_seq_length):
         attention_mask = attention_mask[:max_seq_length]
         labels = labels[:max_seq_length]
 
-    return {
-        "input_ids": input_ids,
-        "attention_mask": attention_mask,
-        "labels": labels
-    }
+    return {"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}
+
 
 def main():
     # Initialize distributed parallelism
-    pp = int(os.environ['PP'])  # Pipeline parallelism
-    tp = int(os.environ['TP'])  # Tensor parallelism
-    dp = int(os.environ['DP'])  # Data parallelism
-    
+    pp = int(os.environ["PP"])  # Pipeline parallelism
+    tp = int(os.environ["TP"])  # Tensor parallelism
+    dp = int(os.environ["DP"])  # Data parallelism
+
     Merak.init(pp, tp, dp)
 
     # Merge HuggingFace and custom arguments
@@ -148,12 +154,16 @@ def main():
     data = pd.read_json(train_file)
     train_ds = Dataset.from_pandas(data)
 
-    train_dataset = train_ds.map(process_data,
-                            fn_kwargs={"tokenizer": tokenizer, "max_seq_length": training_args.seq_length},
-                            remove_columns=train_ds.column_names)
+    train_dataset = train_ds.map(
+        process_data,
+        fn_kwargs={"tokenizer": tokenizer, "max_seq_length": training_args.seq_length},
+        remove_columns=train_ds.column_names,
+    )
 
     # Create data collator for dynamic padding
-    data_collator = DataCollatorForSeq2Seq(tokenizer=tokenizer, padding=True, return_tensors="pt")
+    data_collator = DataCollatorForSeq2Seq(
+        tokenizer=tokenizer, padding=True, return_tensors="pt"
+    )
 
     # Load model config
     print("\nLoading configuration...")
@@ -166,7 +176,6 @@ def main():
     with init_empty_weights():
         model = AutoModelForCausalLM.from_config(config)
     model.enable_input_require_grads()
-
 
     class DeepSeekR1Trainer(MerakTrainer):
         """
@@ -193,14 +202,16 @@ def main():
             optimizer_grouped_parameters = [
                 {
                     "params": [
-                        p for n, p in module.named_parameters() 
+                        p
+                        for n, p in module.named_parameters()
                         if (n in decay_parameters and p.requires_grad)
                     ],
                     "weight_decay": self.args.weight_decay,
                 },
                 {
                     "params": [
-                        p for n, p in module.named_parameters() 
+                        p
+                        for n, p in module.named_parameters()
                         if (n not in decay_parameters and p.requires_grad)
                     ],
                     "weight_decay": 0.0,
@@ -211,19 +222,21 @@ def main():
                 "eps": 1e-8,
             }
             optimizer = AdamW(
-                optimizer_grouped_parameters, lr=training_args.learning_rate, **adam_kwargs
+                optimizer_grouped_parameters,
+                lr=training_args.learning_rate,
+                **adam_kwargs,
             )
             return optimizer
-        
+
     # Initialize trainers
     trainer = DeepSeekR1Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         leaf_modules=(LlamaAttention,),
-        data_collator=data_collator
+        data_collator=data_collator,
     )
-        
+
     trainer.train()
 
 

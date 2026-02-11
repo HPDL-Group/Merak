@@ -15,18 +15,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import torch
 import random
-import numpy as np
 
-__all__ = ['WorkerInitObj', 'MegatronPretrainingRandomSampler', 'RepeatingLoader']
+import numpy as np
+import torch
+
+__all__ = ["WorkerInitObj", "MegatronPretrainingRandomSampler", "RepeatingLoader"]
+
 
 class WorkerInitObj(object):
     def __init__(self, seed: int):
         self.seed = seed
+
     def __call__(self, id: int):
         np.random.seed(seed=self.seed + id)
         random.seed(self.seed + id)
+
 
 class RepeatingLoader:
     def __init__(self, loader):
@@ -50,6 +54,7 @@ class RepeatingLoader:
             batch = next(self.data_iter)
         return batch
 
+
 class MegatronPretrainingRandomSampler:
 
     def __init__(
@@ -58,28 +63,33 @@ class MegatronPretrainingRandomSampler:
         consumed_samples: int,
         micro_batch_size: int,
         data_parallel_rank: int,
-        data_parallel_size: int
-        ):
+        data_parallel_size: int,
+    ):
         # Keep a copy of input params for later use.
         self.total_samples = total_samples
         self.consumed_samples = consumed_samples
         self.micro_batch_size = micro_batch_size
         self.data_parallel_rank = data_parallel_rank
         self.data_parallel_size = data_parallel_size
-        self.micro_batch_times_data_parallel_size = \
+        self.micro_batch_times_data_parallel_size = (
             self.micro_batch_size * data_parallel_size
-        self.last_batch_size = \
+        )
+        self.last_batch_size = (
             self.total_samples % self.micro_batch_times_data_parallel_size
+        )
         self.epoch = 0
 
         # Sanity checks.
-        assert self.total_samples > 0, \
-            'no sample to consume: {}'.format(self.total_samples)
+        assert self.total_samples > 0, "no sample to consume: {}".format(
+            self.total_samples
+        )
         assert self.micro_batch_size > 0
         assert data_parallel_size > 0
-        assert self.data_parallel_rank < data_parallel_size, \
-            'data_parallel_rank should be smaller than data size: {}, ' \
-            '{}'.format(self.data_parallel_rank, data_parallel_size)
+        assert (
+            self.data_parallel_rank < data_parallel_size
+        ), "data_parallel_rank should be smaller than data size: {}, " "{}".format(
+            self.data_parallel_rank, data_parallel_size
+        )
 
     def __len__(self) -> int:
         return self.total_samples
@@ -88,16 +98,15 @@ class MegatronPretrainingRandomSampler:
         active_total_samples = self.total_samples - self.last_batch_size
         # self.epoch = self.consumed_samples // active_total_samples
         current_epoch_samples = self.consumed_samples % active_total_samples
-        assert current_epoch_samples % \
-            self.micro_batch_times_data_parallel_size == 0
+        assert current_epoch_samples % self.micro_batch_times_data_parallel_size == 0
 
         # data sharding and random sampling
-        bucket_size = (self.total_samples // \
-                       self.micro_batch_times_data_parallel_size) \
-                       * self.micro_batch_size
+        bucket_size = (
+            self.total_samples // self.micro_batch_times_data_parallel_size
+        ) * self.micro_batch_size
         bucket_offset = current_epoch_samples // self.data_parallel_size
         start_idx = self.data_parallel_rank * bucket_size
-        
+
         g = torch.Generator()
         g.manual_seed(self.epoch)
         random_idx = torch.randperm(bucket_size, generator=g).tolist()
@@ -108,9 +117,9 @@ class MegatronPretrainingRandomSampler:
         for idx in idx_range:
             batch.append(idx)
             if len(batch) == self.micro_batch_size:
-                self.consumed_samples += \
-                    self.micro_batch_times_data_parallel_size
+                self.consumed_samples += self.micro_batch_times_data_parallel_size
                 yield batch
                 batch = []
+
     def set_epoch(self, epoch: int):
         self.epoch = epoch

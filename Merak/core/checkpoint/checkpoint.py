@@ -15,43 +15,48 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Parts of the code here are adapted from https://github.com/NVIDIA/Megatron-LM/blob/v2.6/megatron/checkpointing.py
+# Parts of the code here are adapted from
+# https://github.com/NVIDIA/Megatron-LM/blob/v2.6/megatron/checkpointing.py
 
-import torch
-import torch.nn as nn
-import random
-import sys
-import os
-import numpy as np
 import datetime
 import json
+import os
+import random
 import shutil
-import torch.distributed as dist
-
+import sys
 from collections import OrderedDict
-from typing import Optional, Tuple, Callable, Union, List, Dict
 from dataclasses import asdict
 from pathlib import Path
+from typing import Callable, Dict, List, Optional, Tuple
 
-from Merak import print_rank_0
-from .utils import (
-    ensure_directory_exists,
-    unwrap_model,
-    get_zero_param_shapes,
-    get_checkpoint_name,
-    ensure_directory_exists,
-    get_best_checkpoint_filename,
-    get_checkpoint_tracker_filename,
-    read_metadata,
-    detect_checkpoint_format,
-    check_state_dict,
-    PeftType,
-    ShardedSafetensorLoader
-)
+import numpy as np
+import torch
+import torch.distributed as dist
+import torch.nn as nn
+
+from Merak import get_logger
+
 from .. import mpu
+from ..finetuning.lora.config import PeftType
 from ..recompute import get_rng_tracker
+from .utils import (
+    check_state_dict,
+    detect_checkpoint_format,
+    ensure_directory_exists,
+    find_latest_ckpt_folder,
+    get_best_checkpoint_filename,
+    get_checkpoint_name,
+    get_checkpoint_tracker_filename,
+    get_zero_param_shapes,
+    load_sharded_safetensors,
+    read_metadata,
+    unwrap_model,
+)
+
+logger = get_logger("simple")
 
 class VersionManager:
+    '''Manage checkpoint version'''
     _CHECKPOINT_VERSION = None
 
     def __init__(self):
@@ -59,6 +64,7 @@ class VersionManager:
 
     @classmethod
     def set_checkpoint_version(cls, value):
+        '''set checkpoint version'''
         if cls._CHECKPOINT_VERSION is not None:
             assert cls._CHECKPOINT_VERSION == value, \
                 "checkpoint versions do not match"
@@ -66,6 +72,7 @@ class VersionManager:
 
     @classmethod
     def get_checkpoint_version(cls):
+        '''get checkpoint version'''
         return cls._CHECKPOINT_VERSION
 
 class CheckpointSaver:
@@ -80,7 +87,7 @@ class CheckpointSaver:
         """Initialize CheckpointSaver with training arguments.
         """
         self.args = None
-        self.dtime = datetime.datetime.now().strftime('%Y-%m-%d')
+        self.dtime = None
         self.iteration = None
         self.save_path = None
         self.saved_best_model = None
@@ -96,45 +103,52 @@ class CheckpointSaver:
             **kwargs):
         """Save a model checkpoint.
 
-        This function saves the current state of the model, optimizer, and learning rate scheduler.
-        It also handles special cases for saving LoRA configurations and Zero-Redundancy Optimizer (ZeRO) states.
+        This function saves the current state of the model, optimizer,
+        and learning rate scheduler. It also handles special cases for 
+        saving LoRA configurations and Zero-Redundancy Optimizer (ZeRO)
+        states.
 
         Args:
             iteration: Current training iteration.
             model: Training model to save.
             optimizer: Optimizer to save.
             lr_scheduler: Learning rate scheduler to save.
-            **kwargs: Additional keyword arguments, including 'best_model' for tracking and 'peft_config' for LoRA.
+            **kwargs: Additional keyword arguments, including 'best_model' for 
+                      tracking and 'peft_config' for LoRA.
         """
-        try:
-            # Extract optional arguments
-            self.iteration = iteration
-            self.peft_config = kwargs.get("peft_config", None)
-            self.args = kwargs.get("args", None)
-            self.higher_better = kwargs.get("higher_better", None)
-            best_model = kwargs.get("best_model", None)
+        # Extract optional arguments
+        self.dtime = datetime.datetime.now().strftime('%Y-%m-%d')
+        self.iteration = iteration
+        self.peft_config = kwargs.get("peft_config", None)
+        self.args = kwargs.get("args", None)
+        self.higher_better = kwargs.get("higher_better", None)
+        self.model = model
+        self.optimizer = optimizer
+        best_model = kwargs.get("best_model", None)
 
-            # Prepare checkpoint file paths and directories
-            checkpoint_name, zero_ckpt_name = self._prepare_save_path(iteration, best_model)
-            if checkpoint_name == None and zero_ckpt_name == None:
-                return
+        # Prepare checkpoint file paths and directories
+        checkpoint_name, zero_ckpt_name = self._prepare_save_path(iteration, best_model)
+        if checkpoint_name is None and zero_ckpt_name is None:
+            return
 
-            if self.peft_config is not None:
-                self._save_lora_config(checkpoint_name)
+        if self.peft_config is not None:
+            self._save_lora_config(checkpoint_name)
 
-            # Prepare state dictionaries for saving
-            model_state = self._prepare_model_state_dict(iteration, model, optimizer, lr_scheduler, **kwargs)
-            lora_state = self._prepare_lora_state_dict(model)  # LoRA state if applicable
-            zero_state = self._prepare_zero_optim_state_dict(model, optimizer)
+        # Prepare state dictionaries for saving
+        model_state = self._prepare_model_state_dict(
+            iteration, model, optimizer, lr_scheduler, **kwargs
+        )
+        lora_state = self._prepare_lora_state_dict(model)  # LoRA state if applicable
+        zero_state = self._prepare_zero_optim_state_dict(model, optimizer)
 
-            # Save the state dictionaries to disk
-            self._save_state_dict(model_state, checkpoint_name, zero_ckpt_name, lora_state, zero_state, **kwargs)
+        # Save the state dictionaries to disk
+        self._save_state_dict(
+            model_state, checkpoint_name, zero_ckpt_name, lora_state, zero_state, **kwargs
+        )
 
-        except Exception as e:
-            print(f"Error occurred during checkpoint saving: {str(e)}")
-            raise
-
-    def _prepare_save_path(self, iteration: int = None, auc_score: Optional[float] = None) -> Tuple[str, str]:
+    def _prepare_save_path(
+            self, iteration: int = None, auc_score: Optional[float] = None
+        ) -> Tuple[str, str]:
         """Prepare and validate the checkpoint save path.
 
         Args:
@@ -164,7 +178,7 @@ class CheckpointSaver:
         )
 
         # Ensure the save path exists
-        if  mpu.get_data_parallel_rank() == 0:
+        if mpu.get_data_parallel_rank() == 0:
             # Only dp rank 0 needs to create directories and save files
             ensure_directory_exists(checkpoint_name)
 
@@ -192,7 +206,8 @@ class CheckpointSaver:
             model: nn.Module,
             optimizer: torch.optim.Optimizer,
             lr_scheduler: Callable,
-            **kwargs) -> Dict:
+            **kwargs
+        ) -> Dict:
         """Prepare the state dictionary for checkpoint saving.
 
         Args:
@@ -204,7 +219,7 @@ class CheckpointSaver:
         Returns:
             Comprehensive state dictionary containing model, optimizer, and training states.
         """
-        if  mpu.get_data_parallel_rank() == 0:
+        if mpu.get_data_parallel_rank() == 0 or self.args.ada_checkpoint:
             state_dict = {}
             # Save training arguments and metadata
             state_dict['args'] = self.args
@@ -212,7 +227,7 @@ class CheckpointSaver:
             state_dict['iteration'] = iteration
 
             # Save model state
-            state_dict['model'] = unwrap_model(model).state_dict()  # Unwrap for distributed models
+            state_dict['model'] = unwrap_model(model).state_dict(keep_vars=self.args.use_differential)
 
             # Save optimizer state if configured
             if self.args.zero_stage != 1 and not self.args.no_save_optim:
@@ -232,10 +247,15 @@ class CheckpointSaver:
                     state_dict['cuda_rng_state'] = torch.cuda.get_rng_state()
                 state_dict['rng_tracker_states'] = get_rng_tracker().get_states()
 
+            # Save others
+            state_dict.update(kwargs)
+
             return state_dict
         return {}
 
-    def _prepare_zero_optim_state_dict(self, model: nn.Module, optimizer: torch.optim.Optimizer) -> Dict:
+    def _prepare_zero_optim_state_dict(
+            self, model: nn.Module, optimizer: torch.optim.Optimizer
+        ) -> Dict:
         """Prepare optimizer states for Zero-Redundancy Optimization (ZeRO).
 
         Args:
@@ -245,10 +265,11 @@ class CheckpointSaver:
             Dictionary containing optimizer states and parameter shapes.
         """
         if self.args.zero_stage == 1:
-            return dict(
-                optimizer_state_dict=optimizer.state_dict(),
-                param_shapes=get_zero_param_shapes(optimizer, model)
-            )
+            return {
+                'optimizer_state_dict': optimizer.state_dict(),
+                'param_shapes': get_zero_param_shapes(optimizer, model)
+            }
+        return None
 
     def _prepare_lora_state_dict(self, model: nn.Module) -> Dict:
         """Prepare LoRA adapter state dictionary for saving.
@@ -324,9 +345,11 @@ class CheckpointSaver:
         for key, value in output_dict.items():
             if isinstance(value, set):
                 output_dict[key] = list(value)
-        # Save to file
-        with open(config_path, "w") as writer:
-            writer.write(json.dumps(output_dict, indent=2, sort_keys=True))
+
+        if dist.get_rank() == 0:
+            # Save to file
+            with open(config_path, "w") as writer:
+                writer.write(json.dumps(output_dict, indent=2, sort_keys=True))
 
     def _save_state_dict(
             self,
@@ -335,7 +358,8 @@ class CheckpointSaver:
             zero_ckpt_name: Optional[str] = None,
             peft_state_dict: Optional[Dict] = None,
             zero_state_dict: Optional[Dict] = None,
-            **kwargs):
+            **kwargs
+        ):
         """Save the state dictionary to the specified path.
 
         Args:
@@ -346,35 +370,33 @@ class CheckpointSaver:
             zero_state_dict: Zero Optimizer state dictionary.
             **kwargs: Additional keyword arguments.
         """
-        try:
-            # Save main state dictionary
-            if mpu.get_data_parallel_rank() == 0:  # Only primary process saves the checkpoint.
-                # Use LoRA state if available, otherwise use regular state.
-                save_state = peft_state_dict if self.peft_config is not None else state_dict
-                torch.save(
-                    save_state,
-                    checkpoint_name,
-                    _use_new_zipfile_serialization=False
-                )
-
-            # Save Zero Optimizer states if required
-            if self.args.zero_stage == 1:
-                dist.barrier()
-                torch.save(zero_state_dict, zero_ckpt_name)
-                print_rank_0('zero checkpoint saved {}'.format(zero_ckpt_name))
-
-            dist.barrier()  # Ensure all processes are synchronized
-
-            # Update the latest iteration tracker
-            self._save_tracker_file()
-
-            print_rank_0(
-                f'successfully saved checkpoint at iteration {self.iteration} to {self.save_path}'
+        # Save main state dictionary
+        if mpu.get_data_parallel_rank() == 0:  # Only primary process saves the checkpoint.
+            # Use LoRA state if available, otherwise use regular state.
+            save_state = peft_state_dict if self.peft_config is not None else state_dict
+            torch.save(
+                save_state,
+                checkpoint_name,
+                _use_new_zipfile_serialization=False
             )
 
-        except Exception as e:
-            print(f"Failed to save checkpoint: {str(e)}")
-            raise
+        # Save Zero Optimizer states if required
+        if self.args.zero_stage == 1:
+            dist.barrier()
+            torch.save(zero_state_dict, zero_ckpt_name)
+            logger.info(
+                f'zero checkpoint saved {zero_ckpt_name}', ranks=[dist.get_rank()]
+            )
+
+        dist.barrier()  # Ensure all processes are synchronized
+
+        # Update the latest iteration tracker
+        self._save_tracker_file()
+
+        logger.info(
+            f'successfully saved checkpoint at iteration {self.iteration} to {self.save_path}',
+            ranks=[0]
+        )
 
     def _save_best_score(self):
         tracker_filename = get_best_checkpoint_filename(self.save_path)
@@ -400,7 +422,10 @@ class CheckpointSaver:
                 self.saved_best_model = auc_score
                 update = True
             else:
-                print_rank_0("Current model AUC score is not better than the saved best model.")
+                logger.info(
+                    "Current model AUC score is not better than the saved best model.",
+                    ranks=[0]
+                )
         if update:
             self._save_best_score()
         return update
@@ -419,7 +444,14 @@ class CheckpointLoader:
         self.version_manager = VersionManager()  # Initialize version manager
 
     def load_checkpoint(
-            self, model, optimizer, lr_scheduler, args, peft_config = None, verbose: bool = False, strict: bool = True
+            self,
+            model,
+            optimizer,
+            lr_scheduler,
+            args,
+            peft_config = None,
+            verbose: bool = False,
+            strict: bool = True
         ) -> tuple:
         """
         Load a model checkpoint and return the iteration.
@@ -429,11 +461,14 @@ class CheckpointLoader:
             optimizer (torch.optim.Optimizer): Optimizer to load the state from the checkpoint.
             lr_scheduler (Callable): Learning rate scheduler to load the state.
             args: Arguments namespace containing configurations.
-            verbose (bool, optional): Whether to print detailed loading information. Defaults to False.
-            strict (bool, optional): Whether to strictly match keys in the state_dict. Defaults to True.
+            verbose (bool, optional): Whether to print detailed loading information. 
+                                      Defaults to False.
+            strict (bool, optional): Whether to strictly match keys in the state_dict. 
+                                     Defaults to True.
 
         Returns:
-            tuple: A tuple containing the iteration number, model state_dict, and optimizer state_dict (if applicable).
+            tuple: A tuple containing the iteration number, model state_dict, 
+                   and optimizer state_dict (if applicable).
         """
         self.model = unwrap_model(model)
         self.optimizer = optimizer
@@ -444,89 +479,104 @@ class CheckpointLoader:
         if self.peft_config is not None:
             return self.load_peft_model_state_dict(verbose), None, None
 
-        try:
-            # Step 1: Detect checkpoint format and path
-            state_dict, iteration, opt_state_dict, release = self._detect_checkpoint(self.args.resume_from_checkpoint, verbose)
+        # Step 1: Detect checkpoint format and path
+        state_dict, iteration, opt_state_dict, release = self._detect_checkpoint(
+            self.args.resume_from_checkpoint
+        )
 
-            # Step 2: Load checkpoint contents
-            if self.args.zero_stage == 1 and not release:
-                self._load_zero_optimizer(opt_state_dict, iteration)
+        # Step 2: Load state dictionary
+        if 'model' in state_dict.keys():
+            model_state_dict = state_dict['model']
+        else:
+            model_state_dict = state_dict
+        self._load_state_dict(model_state_dict, strict, verbose)
 
-            # Step 3: Load state dictionary
-            if 'model' in state_dict.keys():
-                model_state_dict = state_dict['model']
-            else:
-                model_state_dict = state_dict
-            self._load_state_dict(model_state_dict, strict, verbose)
+        # Step 3: Load optimizer and learning rate scheduler
+        if not release and not self.args.finetune and not self.args.no_load_optim:
+            self._load_optimizer(state_dict, opt_state_dict)
+            self._load_learning_rate_scheduler(state_dict)
 
-            # Step 4: Load optimizer and learning rate scheduler
-            if not release and not self.args.finetune and not self.args.no_load_optim:
-                self._load_optimizer(state_dict, opt_state_dict)
-                self._load_learning_rate_scheduler(state_dict)
+        # Step 4: Load RNG states
+        if not release and not self.args.finetune and not self.args.no_load_rng:
+            self._load_rng_states(state_dict)
 
-            # Step 5: Load RNG states
-            if not release and not self.args.finetune and not self.args.no_load_rng:
-                self._load_rng_states(state_dict)
+        # Step 5: Set and check version
+        self.version_manager.set_checkpoint_version(state_dict.get('checkpoint_version', 0))
 
-            # Step 6: Set and check version
-            self.version_manager.set_checkpoint_version(state_dict.get('checkpoint_version', 0))
-            print_rank_0(f'Checkpoint version: {self.version_manager.get_checkpoint_version()}')
+        # pylint: disable=logging-fstring-interpolation
+        logger.info(f'Checkpoint version: {self.version_manager.get_checkpoint_version()}',
+                    ranks=[0]
+        )
+        logger.info(f'Successfully loaded checkpoint at iteration {iteration}', ranks=[0])
+        return iteration, state_dict, opt_state_dict if self.args.zero_stage == 1 else None
 
-            print_rank_0(f'Successfully loaded checkpoint at iteration {iteration}')
-            return iteration, state_dict, opt_state_dict if self.args.zero_stage == 1 else None
-
-        except Exception as e:
-            print_rank_0(f'Failed to load checkpoint: {str(e)}')
-            sys.exit(1)
-
-    def _detect_checkpoint(self, load_dir: str, verbose: bool = False) -> tuple:
+    def _detect_checkpoint(self, load_dir: str) -> tuple:
         """
         Detect the checkpoint and gather necessary information.
 
         Args:
             load_dir (str): Path to the checkpoint directory.
-            verbose (bool, optional): Whether to print detailed information. Defaults to False.
 
         Returns:
-            tuple: Contains state dictionary, iteration number, optimizer state dictionary (if any), and release flag.
+            tuple: Contains state dictionary, iteration number, optimizer state dictionary (if any), 
+                   and release flag.
         """
+
+        iteration = 0
+        state_dict = None
+        opt_state_dict = None
+        zero_ckpt_name = None
+        release = False
+
         checkpoint_name = detect_checkpoint_format(load_dir)
         if checkpoint_name is None:
             # If checkpoint not detected, read metadata file
+            if self.args.load_lastest:
+                lastest_ckpt_dir = find_latest_ckpt_folder(self.args.output_dir)
+                load_dir = os.path.join(self.args.output_dir, lastest_ckpt_dir)
             tracker_filename = get_checkpoint_tracker_filename(load_dir)
             if not os.path.isfile(tracker_filename):
-                print_rank_0('Warning: Could not find metadata file. Starting from random initialization...')
-                return 0, None, None, False
+                logger.warning(
+                    'Warning: Could not find metadata file. Starting from random initialization...',
+                    ranks=[0]
+                )
+                return state_dict, iteration, opt_state_dict, release
             iteration, release = read_metadata(tracker_filename)
             checkpoint_name, zero_ckpt_name = get_checkpoint_name(
                 load_dir, iteration, self.args, release=release
             )
-        else:
+        elif checkpoint_name:
             iteration = 0
             release = True
-            zero_ckpt_name = None
-
-        if verbose and dist.get_rank() == 0:
-            print(f'Loading checkpoint: {checkpoint_name}')
-
-        if self.args.zero_stage == 1 and not release:
-            if os.path.isfile(zero_ckpt_name):
-                opt_state_dict = torch.load(zero_ckpt_name, map_location='cpu')
-            else:
-                opt_state_dict = None
         else:
-            opt_state_dict = None
+            return state_dict, iteration, opt_state_dict, release
 
-        try:
-            if 'safetensor' not in checkpoint_name:
-                state_dict = torch.load(checkpoint_name, map_location='cpu')
-            else:
-                state_dict = ShardedSafetensorLoader(
-                    self.model, self.args.resume_from_checkpoint
-                ).get_state_dict()
-        except Exception as e:
-            print_rank_0(f'Failed to load checkpoint: {str(e)}')
-            sys.exit(1)
+        # pylint: disable=logging-fstring-interpolation
+        logger.info(f'Loading checkpoint: {checkpoint_name}', ranks=[0])
+
+        if self.args.zero_stage == 1 and not release and not self.args.finetune:
+            if os.path.isfile(zero_ckpt_name):
+                opt_state_dict = torch.load(zero_ckpt_name, map_location='cpu', weights_only=False)
+
+        if 'safetensor' not in checkpoint_name:
+            state_dict = torch.load(checkpoint_name, map_location='cpu', weights_only=False)
+        else:
+            state_dict = load_sharded_safetensors(
+                self.model, checkpoint_name
+            )
+
+        # Set iteration.
+        if self.args.finetune or release:
+            iteration = 0
+        else:
+            try:
+                iteration = state_dict['iteration']
+            except KeyError:
+                print(
+                    'A metadata file exists but unable to load iteration '
+                    f'from checkpoint {checkpoint_name}, exiting'
+                )
+                sys.exit()
 
         return state_dict, iteration, opt_state_dict, release
 
@@ -542,20 +592,6 @@ class CheckpointLoader:
         state_dict, strict = check_state_dict(self.model, state_dict, self.args, verbose)
         self.model.load_state_dict(state_dict, strict=strict)
 
-    def _load_zero_optimizer(self, zero_ckpt_name: str, iteration: int) -> None:
-        """
-        Load the zero optimizer checkpoint.
-
-        Args:
-            zero_ckpt_name (str): Path to the zero optimizer checkpoint.
-            iteration (int): Current iteration number.
-        """
-        opt_state_dict = torch.load(zero_ckpt_name, map_location='cpu')
-        if self.optimizer is not None:
-            self.optimizer.load_state_dict(
-                opt_state_dict['optimizer_state_dict'],
-                load_optimizer_states=True
-            )
 
     def _load_optimizer(self, state_dict: dict, opt_state_dict: dict) -> None:
         """
@@ -568,15 +604,20 @@ class CheckpointLoader:
         """
         try:
             if self.optimizer is not None:
-                if self.args.zero_stage is not None:
-                    self._load_zero_optimizer_from_state_dict(state_dict, opt_state_dict)
-                else:
-                    self._load_optimizer_from_state_dict(state_dict)
+                if not os.path.isfile(self.args.zero_reshard):
+                    if self.args.zero_stage is not None:
+                        self._load_zero_optimizer(opt_state_dict)
+                    else:
+                        self._load_optimizer_from_state_dict(state_dict)
         except KeyError as e:
-            print_rank_0(f'Failed to load optimizer state: {str(e)}. Consider using --no_load_optim or --finetune.')
+            # pylint: disable=logging-fstring-interpolation
+            logger.info(
+                f'Failed to load optimizer state: {str(e)}. '
+                 'Consider using --no_load_optim or --finetune.'
+            )
             sys.exit(1)
 
-    def _load_zero_optimizer_from_state_dict(self, state_dict: dict, opt_state_dict: dict) -> None:
+    def _load_zero_optimizer(self, opt_state_dict: dict) -> None:
         """
         Load zero optimizer from the state dictionary.
 
@@ -589,11 +630,6 @@ class CheckpointLoader:
                 opt_state_dict['optimizer_state_dict'],
                 load_optimizer_states=True
             )
-        else:
-            if self.args.fp16:
-                self.optimizer.load_state_dict(state_dict['optimizer'], load_optimizer_states=True)
-            else:
-                self.optimizer.load_state_dict(state_dict['optimizer'])
 
     def _load_optimizer_from_state_dict(self, state_dict: dict) -> None:
         """
@@ -601,7 +637,6 @@ class CheckpointLoader:
 
         Args:
             state_dict (dict): State dictionary.
-            verbose (bool): Whether to print detailed information.
         """
         if self.args.fp16:
             self.optimizer.load_state_dict(state_dict['optimizer'], load_optimizer_states=True)
@@ -620,7 +655,8 @@ class CheckpointLoader:
             if self.lr_scheduler is not None:
                 self.lr_scheduler.load_state_dict(state_dict['lr_scheduler'])
         except KeyError as e:
-            print_rank_0(f'Failed to load learning rate scheduler state: {str(e)}')
+            # pylint: disable=logging-fstring-interpolation
+            logger.info(f'Failed to load learning rate scheduler state: {str(e)}')
             sys.exit(1)
 
     def _load_rng_states(self, state_dict: dict) -> None:
@@ -644,7 +680,11 @@ class CheckpointLoader:
                 get_rng_tracker().set_states(
                     state_dict['rng_tracker_states'])
         except KeyError:
-            print_rank_0(f'Failed to load RNG states from checkpoint. Consider using --no_load_rng or --finetune.')
+            # pylint: disable=logging-fstring-interpolation
+            logger.info(
+                'Failed to load RNG states from checkpoint. '
+                'Consider using --no_load_rng or --finetune.'
+            )
             sys.exit(1)
 
     def load_peft_model_state_dict(
@@ -671,27 +711,29 @@ class CheckpointLoader:
             # Read the tracker file to set the iteration
             tracker_filename = get_checkpoint_tracker_filename(load_dir)
             if not os.path.isfile(tracker_filename):
-                if mpu.get_data_parallel_rank() == 0:
-                    print(f'WARNING: No Lora model files found at {self.args.resume_from_checkpoint}')
+                # pylint: disable=logging-fstring-interpolation
+                logger.info(
+                    f'WARNING: No Lora model files found at {self.args.resume_from_checkpoint}',
+                    ranks=[0]
+                )
                 return OrderedDict()
 
             iteration, release = read_metadata(tracker_filename)
-            filename, _ = get_checkpoint_name(load_dir, iteration, self.args, release=release, peft=True)
+            filename, _ = get_checkpoint_name(
+                load_dir, iteration, self.args, release=release, peft=True
+            )
         else:
             iteration = 0
 
-        print_rank_0(f'Loading Peft checkpoint from {filename}')
+        # pylint: disable=logging-fstring-interpolation
+        logger.info(f'Loading Peft checkpoint from {filename}', ranks=[0])
 
-        try:
-            # Load the checkpoint file
-            peft_state_dict = torch.load(
-                filename,
-                map_location=torch.device("cpu"),
-                weights_only=False
-            )
-        except Exception as e:
-            print_rank_0(f'Failed to load Peft checkpoint: {str(e)}')
-            return OrderedDict()
+        # Load the checkpoint file
+        peft_state_dict = torch.load(
+            filename,
+            map_location=torch.device("cpu"),
+            weights_only=False
+        )
 
         # Update the state dictionary
         load_results = self._set_peft_model_state_dict(peft_state_dict, verbose)
@@ -729,25 +771,29 @@ class CheckpointLoader:
                     suffix = k.split(parameter_prefix)[1]
                     if "." in suffix:
                         suffix_to_replace = ".".join(suffix.split(".")[1:])
-                        k = k.replace(suffix_to_replace, f"{adapter_name}.{suffix_to_replace}" if adapter_name else suffix_to_replace)
+                        k = k.replace(
+                            suffix_to_replace,
+                            f"{adapter_name}.{suffix_to_replace}" 
+                                if adapter_name else suffix_to_replace
+                        )
                     else:
                         k = f"{parameter_prefix}{k}" if adapter_name else k
                 peft_model_state[k] = v
 
             # Check and apply strict loading
-            peft_model_state, strict = check_state_dict(self.model, peft_model_state, self.args, verbose, load_list=modules_to_save)
+            peft_model_state, strict = check_state_dict(
+                self.model, peft_model_state, self.args, verbose, load_list=modules_to_save
+            )
 
             # Update the model's state dictionary
             load_result = self.model.load_state_dict(peft_model_state, strict=strict)
 
             return load_result
-        else:
-            raise NotImplementedError("Unsupported Peft type.")
+        raise NotImplementedError("Unsupported Peft type.")
 
 
 def _sorted_checkpoints(
         output_dir: Optional[str] = None,
-        checkpoint_prefix: str = "ckpt"
     ) -> List[str]:
     """
     List and sort the checkpoint paths in the specified output directory.
@@ -764,7 +810,7 @@ def _sorted_checkpoints(
     if output_dir:
         output_path = Path(output_dir)
         # Collect all paths matching the checkpoint pattern
-        glob_pattern = output_path.glob(f"*_ckpt")
+        glob_pattern = output_path.glob("*_ckpt")
         for path in glob_pattern:
             if not path.is_dir():
                 continue  # Skip non-directory paths
@@ -781,7 +827,6 @@ def _sorted_checkpoints(
 
 def delete_empty_checkpoint_directories(
         output_dir: Optional[str] = None,
-        checkpoint_prefix: str = "ckpt"
     ) -> None:
     """
     Delete empty checkpoint directories in the specified output directory.
@@ -790,21 +835,23 @@ def delete_empty_checkpoint_directories(
         output_dir (Optional[str]): Directory containing checkpoints. Defaults to None.
         checkpoint_prefix (str): Prefix for checkpoint directories. Defaults to "ckpt".
     """
-    if output_dir:
-        output_path = Path(output_dir)
-        glob_pattern = output_path.glob(f"*_ckpt")
-        for directory in glob_pattern:
-            if directory.is_dir() and not list(directory.iterdir()):
-                print(f"Deleting empty checkpoint directory: {directory}")
+    output_path = Path(output_dir)
+    glob_pattern = output_path.glob("*_ckpt")
+    for directory in glob_pattern:
+        if directory.exists() and directory.is_dir():
+            if not list(directory.iterdir()) and dist.get_rank() == 0:
+                # pylint: disable=logging-fstring-interpolation
+                logger.info(f"Deleting empty checkpoint directory: {directory}", ranks=[0])
                 try:
                     shutil.rmtree(str(directory))
                 except (FileNotFoundError, PermissionError) as e:
-                    print(f"Failed to delete directory {directory}: {str(e)}")
+                    # pylint: disable=logging-fstring-interpolation
+                    logger.info(f"Failed to delete directory {directory}: {str(e)}", ranks=[0])
+    dist.barrier()
 
 def rotate_checkpoints(
         args,
         output_dir: Optional[str] = None,
-        checkpoint_prefix: str = "ckpt"
     ) -> None:
     """
     Manage checkpoints by deleting old ones according to save_total_limit.
@@ -818,18 +865,23 @@ def rotate_checkpoints(
         return
 
     # Delete any empty checkpoint directories
-    delete_empty_checkpoint_directories(output_dir, checkpoint_prefix)
+    delete_empty_checkpoint_directories(output_dir)
 
     # Retrieve sorted list of checkpoint paths
-    checkpoints = _sorted_checkpoints(output_dir, checkpoint_prefix)
+    checkpoints = _sorted_checkpoints(output_dir)
 
     # Determine the number of checkpoints to keep
     if not checkpoints:
-        print("No checkpoints found.")
+        logger.warning("No checkpoints found.", ranks=[0])
         return
 
     if len(checkpoints) <= args.save_total_limit:
-        print(f"All {len(checkpoints)} checkpoints are within the limit of {args.save_total_limit}. Nothing to delete.")
+        # pylint: disable=logging-fstring-interpolation
+        logger.warning(
+            f"All {len(checkpoints)} checkpoints are within the limit of "
+            f"{args.save_total_limit}. Nothing to delete.",
+            ranks=[0]
+        )
         return
 
     # Adjust the save limit if necessary
@@ -841,14 +893,16 @@ def rotate_checkpoints(
     num_to_delete = max(0, len(checkpoints) - save_limit)
     if num_to_delete > 0:
         checkpoints_to_delete = checkpoints[:num_to_delete]
-        if dist.get_rank() == 0:
-            for path in checkpoints_to_delete:
-                print(f"Deleting checkpoint: {path}")
-                try:
+        for path in checkpoints_to_delete:
+            logger.info(f"Deleting checkpoint: {path}", ranks=[0])
+            try:
+                if dist.get_rank() == 0:
                     shutil.rmtree(path)
-                except (FileNotFoundError, PermissionError) as e:
-                    print(f"Failed to delete checkpoint {path}: {str(e)}")
-            print(f"Successfully maintained {save_limit} most recent checkpoints.")
-        dist.barrier()
+            except (FileNotFoundError, PermissionError) as e:
+                logger.info(f"Failed to delete checkpoint {path}: {str(e)}", ranks=[0])
+        logger.info(f"Successfully maintained {save_limit} most recent checkpoints.", ranks=[0])
     else:
-        print(f"All {len(checkpoints)} checkpoints are within the limit of {args.save_total_limit}.")
+        logger.info(
+            f"All {len(checkpoints)} checkpoints are within the limit of {args.save_total_limit}.",
+            ranks=[0]
+        )

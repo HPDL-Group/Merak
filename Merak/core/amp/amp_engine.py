@@ -15,29 +15,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Any, Dict, Tuple, Union
+
 import torch
-import torch.distributed as dist
-from typing import Union, Tuple, Dict, Optional
-from .fp16_optimizer import FP16_Optimizer
-from .. import mpu
-from .. import zero
-from ..printer import logger, log_dist
-from ...merak_args import MerakArguments
+
+from Merak import get_logger
+
+from .amp_optimizer import HalfPrecisionOptimizer
 
 try:
     import apex
-    from apex import amp
 except ImportError:
     pass
 
+
 class MixedPrecisionConfig:
     """
-   Mixin for mixed precision training configurations.
+    Mixin for mixed precision training configurations.
     Handles the setup and configuration of models and optimizers for different
     precision modes (FP16, FP32, etc.).
     """
 
-    def __init__(self, args: MerakArguments):
+    def __init__(self, args: Any):
         """
         Initialize the mixed precision configuration.
 
@@ -49,15 +48,13 @@ class MixedPrecisionConfig:
         self.optimizer = None
         self.device = None
         self.enable_backward_allreduce = True
-        self.global_rank = dist.get_rank()
-        self.data_parallel_group = mpu.get_data_parallel_group()
-        self.broadcast_src_rank = dist.get_global_rank(self.data_parallel_group, 0)
+        self.logger = get_logger("simple")
 
     def configure(
         self,
         optimizer: torch.optim.Optimizer,
         module: torch.nn.Module,
-        device: torch.device
+        device: torch.device,
     ) -> Tuple[Union[torch.nn.Module, torch.optim.Optimizer]]:
         """
         Configure the model and optimizer for mixed precision training.
@@ -72,36 +69,33 @@ class MixedPrecisionConfig:
         """
         self.optimizer = optimizer
         self.device = device
-
-        if self.args.fp16:
-            self._configure_fp16_model(module)
-        elif self.args.bf16 and self.args.half_precision_backend != "cuda_amp":
-            self._configure_bf16_model(module)
-        else:
-            self.module = module.float().to(self.device)
+        self.module = module
+        base_optimizer = None
 
         if optimizer is not None:
-            self._configure_optimizer()
+            base_optimizer = self.optimizer(self.module)
+            self.optimizer = base_optimizer
+            if not self.args.zero_stage == 1:
+                self._configure_optimizer()
 
-        return self.module, self.optimizer
+        return self.optimizer, base_optimizer
 
     def _configure_optimizer(self):
         """
         Configure the optimizer for mixed precision training.
         """
-        if self.global_rank == 0:
-            logger.info(f"Basic Optimizer: {self.optimizer.__class__.__name__}")
+        self.logger.info(
+            f"Basic Optimizer: {self.optimizer.__class__.__name__}", ranks=[0]
+        )
 
         if self.args.half_precision_backend == "apex":
             self._configure_apex_amp()
-        elif self.args.fp16:
-            self.optimizer = self.configure_fp16_optimizer(self.optimizer)
-        elif self.args.bf16:
-            pass
+        elif self.args.fp16 or self.args.bf16:
+            self.optimizer = self.configure_fp16_or_bf16_optimizer(self.optimizer)
         else:
-            raise ValueError("Please set --fp16 or --bf16 or --half_precision_backend")
-
-        self.quantizer = None
+            pass
+            # raise ValueError(
+            #     "Please set --fp16 or --bf16 or --half_precision_backend")
 
     def _configure_apex_amp(self):
         """
@@ -112,46 +106,22 @@ class MixedPrecisionConfig:
             "opt_level": self.args.fp16_opt_level,
         }
 
-        if self.global_rank == 0:
-            logger.info(f"Initializing APEX AMP with parameters: {amp_params}")
+        self.logger.info(
+            f"Initializing APEX AMP with parameters: {amp_params}", ranks=[0]
+        )
 
-        try:
-            self.module, self.optimizer = amp.initialize(
-                self.module, self.optimizer, **amp_params
-            )
-        except Exception as e:
-            raise RuntimeError(f"Unable to initialize APEX AMP: {str(e)}")
+        self.module, self.optimizer = apex.amp.initialize(
+            self.module, self.optimizer, **amp_params
+        )
 
-        if self.global_rank == 0:
-            logger.info(f"Successfully initialized APEX AMP from: {amp.__path__}")
+        self.logger.info(
+            f"Successfully initialized APEX AMP from: {apex.amp.__path__}", ranks=[0]
+        )
 
         self.optimizer.zero_grad()
 
-    def _configure_bf16_model(self, model: torch.nn.Module):
-        """
-        Configure the model for BF16 training.
-
-        Args:
-            model (torch.nn.Module): The model to configure.
-        """
-        self.module = model
-        self.module.bfloat16()
-        self.module.to(self.device)
-
-    def _configure_fp16_model(self, model: torch.nn.Module):
-        """
-        Configure the model for FP16 training.
-
-        Args:
-            model (torch.nn.Module): The model to configure.
-        """
-        self.module = model
-        self.module.half()
-        self.module.to(self.device)
-
-    def configure_fp16_optimizer(
-        self,
-        optimizer: torch.optim.Optimizer
+    def configure_fp16_or_bf16_optimizer(
+        self, optimizer: torch.optim.Optimizer
     ) -> torch.optim.Optimizer:
         """
         Configure the optimizer for FP16 training.
@@ -163,13 +133,15 @@ class MixedPrecisionConfig:
             torch.optim.Optimizer: The configured optimizer.
         """
         dynamic_loss_args = self.dynamic_loss_args()
-        log_dist("Creating FP16 unfused optimizer with dynamic loss scale",
-                 ranks=[0])
+        self.logger.info(
+            "Creating FP16 unfused optimizer with dynamic loss scale", ranks=[0]
+        )
 
-        configured_optimizer = FP16_Optimizer(
+        configured_optimizer = HalfPrecisionOptimizer(
             optimizer,
-            static_loss_scale=self.args.loss_scale,
-            dynamic_loss_scale=True,
+            self.args,
+            static_loss_scale=self.args.loss_scale if not self.args.bf16 else 1,
+            dynamic_loss_scale=True if not self.args.bf16 else False,
             dynamic_loss_args=dynamic_loss_args,
             clip_grad=self.args.max_grad_norm,
         )
@@ -184,8 +156,8 @@ class MixedPrecisionConfig:
             Dict[str, int]: A dictionary containing loss scale parameters.
         """
         return {
-            'INITIAL_LOSS_SCALE': 2 ** self.args.initial_scale_power,
-            'SCALE_WINDOW': self.args.loss_scale_window,
-            'DELAYED_SHIFT': 2,
-            'MIN_LOSS_SCALE': self.args.min_loss_scale,
+            "INITIAL_LOSS_SCALE": 2**self.args.initial_scale_power,
+            "SCALE_WINDOW": self.args.loss_scale_window,
+            "DELAYED_SHIFT": 2,
+            "MIN_LOSS_SCALE": self.args.min_loss_scale,
         }

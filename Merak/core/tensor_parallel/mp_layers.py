@@ -15,35 +15,32 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import math
 import torch
-import torch.nn.functional as F
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.nn.init as init
 
-from Merak.merak_args import get_args
 from .. import mpu
-
-from typing import Callable
 
 ## bias 在使用PipedParallelLinear 时候不能 skip_bias_add
 ## 在使用AsyncRowParallelLinear 必须skip_bias_add
 ## AsyncColumnParallelLinear 不能skip_bias_add
 
+
 class ConvPara(torch.nn.Module):
-    def __init__(self,
-                 in_channels,
-                 out_channels,
-                 kernel_size,
-                 stride,
-                 padding,
-                 dilation = 1,
-                 groups = 1,
-                 bias=True,
-                 input_is_parallel=False,
-                 init_method=init.xavier_normal_,
-                 **kwargs
-        ):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        kernel_size,
+        stride,
+        padding,
+        dilation=1,
+        groups=1,
+        bias=True,
+        input_is_parallel=False,
+        **kwargs
+    ):
         super(ConvPara, self).__init__()
         self.channels_conv2d = mpu.ColParallelConv2d(
             in_channels,
@@ -55,8 +52,7 @@ class ConvPara(torch.nn.Module):
             groups,
             bias,
             input_is_parallel,
-            init_method,
-            kwargs
+            **kwargs
         )
 
     @property
@@ -71,117 +67,125 @@ class ConvPara(torch.nn.Module):
         intermediate_parallel, _ = self.channels_conv2d(x)
         return intermediate_parallel
 
-class ColPara(torch.nn.Module):
-    def __init__(self, in_feature, out_feature, init_method,
-                 bias=True, gather_output=False, need_permute=False):
-        super(ColPara, self).__init__()
-        self.need_permute = need_permute
 
-        args = get_args()
+class ColPara(torch.nn.Module):
+    def __init__(
+        self,
+        in_feature,
+        out_feature,
+        args,
+        init_method,
+        bias=True,
+        gather_output=False,
+    ):
+        super(ColPara, self).__init__()
+
         if args.tp_overlapping_level > 1:
             self.col_linear = AsyncColumnParallelLinear(
                 in_feature,
                 out_feature,
+                args,
                 bias=bias,
                 gather_output=gather_output,
                 init_method=init_method,
-                skip_bias_add=False)
+                skip_bias_add=False,
+            )
         elif args.tp_overlapping_level == 1:
             self.col_linear = PipedColumnParallelLinear(
                 in_feature,
                 out_feature,
+                args,
                 bias=bias,
                 gather_output=gather_output,
                 init_method=init_method,
-                skip_bias_add=False)
+                skip_bias_add=False,
+            )
         else:
             self.col_linear = mpu.ColumnParallelLinear(
                 in_feature,
                 out_feature,
+                args,
                 bias=bias,
                 gather_output=gather_output,
                 init_method=init_method,
-                skip_bias_add=False)
-    
+                skip_bias_add=False,
+            )
+
     @property
     def weight(self):
         return self.col_linear.weight
-    
+
     @property
     def bias(self):
         return self.col_linear.bias
 
     def forward(self, x):
         # input is (batch_size, seq_length, hidden_size)
-        # (batch_size, seq_length, hidden_size) -> (seq_length, batch_size, hidden_size) 
-        if self.need_permute: x = x.permute(1, 0, 2)
-        
-        # (seq_length, batch_size, hidden_size) * (4h/mp or 3h/mp, hidden_size) ->
-        # (seq_length, batch_size, 4h/mp or 3h/mp)
         intermediate_parallel, _ = self.col_linear(x)
-        if self.need_permute:
-            # return (batch_size, seq_length, 4h/mp or 3h/mp)
-            return intermediate_parallel.permute(1, 0, 2)
-        else:
-            return intermediate_parallel
+
+        return intermediate_parallel
 
 
 class RowPara(torch.nn.Module):
-    def __init__(self, in_feature, out_feature, output_layer_init_method, 
-                 bias=True, input_is_parallel=True, need_permute=False):
+    def __init__(
+        self,
+        in_feature,
+        out_feature,
+        args,
+        output_layer_init_method,
+        bias=True,
+        input_is_parallel=True,
+    ):
         super(RowPara, self).__init__()
-        self.need_permute = need_permute
-        args = get_args()
-        self.return_bias = (args.tp_overlapping_level > 1)
+        self.return_bias = args.tp_overlapping_level > 1
         if args.tp_overlapping_level > 1:
             self.row_linear = AsyncRowParallelLinear(
                 in_feature,
                 out_feature,
+                args,
                 bias=bias,
                 input_is_parallel=input_is_parallel,
                 init_method=output_layer_init_method,
-                skip_bias_add=True)
+                skip_bias_add=True,
+            )
         elif args.tp_overlapping_level == 1:
             self.row_linear = PipedRowParallelLinear(
                 in_feature,
                 out_feature,
+                args,
                 bias=bias,
                 input_is_parallel=input_is_parallel,
                 init_method=output_layer_init_method,
-                skip_bias_add=False)
+                skip_bias_add=False,
+            )
         else:
             self.row_linear = mpu.RowParallelLinear(
                 in_feature,
                 out_feature,
+                args,
                 bias=bias,
                 input_is_parallel=input_is_parallel,
                 init_method=output_layer_init_method,
-                skip_bias_add=False)
+                skip_bias_add=False,
+            )
 
     @property
     def weight(self):
         return self.row_linear.weight
-    
+
     @property
     def bias(self):
         return self.row_linear.bias
 
     def forward(self, x):
-        # input is (batch_size, seq_length, h or 4h/mp) 
-        if self.need_permute: x = x.permute(1, 0, 2)
-        # input is (seq_length, batch_size, 4*hidden_size/mp)
+        # input is (batch_size, seq_length, h or 4h/mp)
 
         # (seq_length, batch_size, h or 4h/mp) * (hidden_size, h or 4h/mp) ->
         # (seq_length, batch_size, hidden_size)
         output, bias = self.row_linear(x)
-        
-        if self.need_permute:
-            # return (batch_size, seq_length, hidden_size)
-            return output.permute(1, 0, 2)
-        else:
-            if self.return_bias:
-                return output, bias
-            return output
+        if self.return_bias:
+            return output, bias
+        return output
 
 
 def get_async_op_hook(grad):
@@ -193,10 +197,18 @@ def get_async_op_hook(grad):
 
 class AsyncColumnParallelLinear(torch.nn.Module):
 
-    def __init__(self, input_size, output_size, bias=True, gather_output=True,
-                 init_method=init.xavier_normal_, stride=1,
-                 keep_master_weight_for_test=False,
-                 skip_bias_add=False):
+    def __init__(
+        self,
+        input_size,
+        output_size,
+        args,
+        bias=True,
+        gather_output=True,
+        init_method=init.xavier_normal_,
+        stride=1,
+        keep_master_weight_for_test=False,
+        skip_bias_add=False,
+    ):
         super(AsyncColumnParallelLinear, self).__init__()
 
         # Keep input parameters
@@ -212,22 +224,29 @@ class AsyncColumnParallelLinear(torch.nn.Module):
         # Note: torch.nn.functional.linear performs XA^T + b and as a result
         # we allocate the transpose.
         # Initialize weight.
-        args = get_args()
         if args.use_cpu:
             device = "cpu"
         else:
             device = torch.cuda.current_device()
-        self.weight = nn.Parameter(torch.empty(
-            self.output_size_per_partition, self.input_size,
-            device=device, dtype=args.params_dtype))
-        mpu.layers._initialize_affine_weight_gpu(self.weight, init_method,
-                                                 partition_dim=0, stride=stride)
-            
-        if bias:
-            self.bias = nn.Parameter(torch.empty(
+        self.weight = nn.Parameter(
+            torch.empty(
                 self.output_size_per_partition,
+                self.input_size,
                 device=device,
-                dtype=args.params_dtype)
+                dtype=args.params_dtype,
+            )
+        )
+        mpu.layers._initialize_affine_weight_gpu(
+            self.weight, init_method, partition_dim=0, stride=stride
+        )
+
+        if bias:
+            self.bias = nn.Parameter(
+                torch.empty(
+                    self.output_size_per_partition,
+                    device=device,
+                    dtype=args.params_dtype,
+                )
             )
             self.bias.model_parallel = True
             self.bias.partition_dim = 0
@@ -236,12 +255,11 @@ class AsyncColumnParallelLinear(torch.nn.Module):
             with torch.no_grad():
                 self.bias.zero_()
         else:
-            self.register_parameter('bias', None)
+            self.register_parameter("bias", None)
 
     def forward(self, input_):
         # Set up backprop all-reduce.
-        input_parallel = \
-            mpu.mappings.async_copy_to_model_parallel_region(input_)
+        input_parallel = mpu.mappings.async_copy_to_model_parallel_region(input_)
         # input_parallel.register_hook(get_async_op_hook)
         # Matrix multiply.
         # print_rank_0([input_parallel.shape, input_parallel.grad_fn])
@@ -249,28 +267,32 @@ class AsyncColumnParallelLinear(torch.nn.Module):
         output_parallel = F.linear(input_parallel, self.weight, bias)
         if self.gather_output:
             # All-gather across the partitions.
-            output = \
-                mpu.mappings.gather_from_model_parallel_region(output_parallel)
+            output = mpu.mappings.gather_from_model_parallel_region(output_parallel)
         else:
-            output = output_parallel 
+            output = output_parallel
         output_bias = self.bias if self.skip_bias_add else None
         return output, output_bias
-    
+
     def extra_repr(self) -> str:
-        return 'in_features={}, out_features={}, bias={}'.format(
-            self.input_size,
-            self.output_size_per_partition,
-            self.bias is not None
+        return "in_features={}, out_features={}, bias={}".format(
+            self.input_size, self.output_size_per_partition, self.bias is not None
         )
 
 
 class AsyncRowParallelLinear(torch.nn.Module):
 
-    def __init__(self, input_size, output_size, bias=True,
-                 input_is_parallel=False,
-                 init_method=init.xavier_normal_, stride=1,
-                 keep_master_weight_for_test=False,
-                 skip_bias_add=False):
+    def __init__(
+        self,
+        input_size,
+        output_size,
+        args,
+        bias=True,
+        input_is_parallel=False,
+        init_method=init.xavier_normal_,
+        stride=1,
+        keep_master_weight_for_test=False,
+        skip_bias_add=False,
+    ):
         super(AsyncRowParallelLinear, self).__init__()
 
         # Keep input parameters
@@ -286,58 +308,66 @@ class AsyncRowParallelLinear(torch.nn.Module):
         # Note: torch.nn.functional.linear performs XA^T + b and as a result
         # we allocate the transpose.
         # Initialize weight.
-        args = get_args()
         if args.use_cpu:
             device = "cpu"
         else:
             device = torch.cuda.current_device()
 
-        self.weight = nn.Parameter(torch.empty(
-            self.output_size, self.input_size_per_partition,
-            device=device, dtype=args.params_dtype))
-        mpu.layers._initialize_affine_weight_gpu(self.weight, init_method,
-                                                 partition_dim=1, stride=stride)
+        self.weight = nn.Parameter(
+            torch.empty(
+                self.output_size,
+                self.input_size_per_partition,
+                device=device,
+                dtype=args.params_dtype,
+            )
+        )
+        mpu.layers._initialize_affine_weight_gpu(
+            self.weight, init_method, partition_dim=1, stride=stride
+        )
         if bias:
-            self.bias = nn.Parameter(torch.empty(
-                self.output_size, device=device,
-                dtype=args.params_dtype)
+            self.bias = nn.Parameter(
+                torch.empty(self.output_size, device=device, dtype=args.params_dtype)
             )
             # Always initialize bias to zero.
             with torch.no_grad():
                 self.bias.zero_()
         else:
-            self.register_parameter('bias', None)
+            self.register_parameter("bias", None)
 
     def forward(self, input_):
         # Set up backprop all-reduce.
         if self.input_is_parallel:
             input_parallel = input_
         else:
-            input_parallel = \
-                mpu.mappings.scatter_to_model_parallel_region(input_)
+            input_parallel = mpu.mappings.scatter_to_model_parallel_region(input_)
         # Matrix multiply.
         output_parallel = F.linear(input_parallel, self.weight)
         # All-reduce across all the partitions.
-        output_ = \
-           mpu.mappings.async_reduce_from_model_parallel_region(output_parallel)
+        output_ = mpu.mappings.async_reduce_from_model_parallel_region(output_parallel)
         # output = output_ + self.bias if self.bias is not None else output_
         output_bias = self.bias if self.skip_bias_add else None
         return output_, output_bias
 
     def extra_repr(self) -> str:
-        return 'in_features={}, out_features={}, bias={}'.format(
-            self.input_size_per_partition,
-            self.output_size,
-            self.bias is not None
+        return "in_features={}, out_features={}, bias={}".format(
+            self.input_size_per_partition, self.output_size, self.bias is not None
         )
 
 
 class PipedColumnParallelLinear(torch.nn.Module):
 
-    def __init__(self, input_size, output_size, bias=True, gather_output=True,
-                 init_method=init.xavier_normal_, stride=1,
-                 keep_master_weight_for_test=False,
-                 skip_bias_add=False):
+    def __init__(
+        self,
+        input_size,
+        output_size,
+        args,
+        bias=True,
+        gather_output=True,
+        init_method=init.xavier_normal_,
+        stride=1,
+        keep_master_weight_for_test=False,
+        skip_bias_add=False,
+    ):
         super(PipedColumnParallelLinear, self).__init__()
 
         # Keep input parameters
@@ -353,22 +383,29 @@ class PipedColumnParallelLinear(torch.nn.Module):
         # Note: torch.nn.functional.linear performs XA^T + b and as a result
         # we allocate the transpose.
         # Initialize weight.
-        args = get_args()
         if args.use_cpu:
             device = "cpu"
         else:
             device = torch.cuda.current_device()
-        self.weight = nn.Parameter(torch.empty(
-            self.output_size_per_partition, self.input_size,
-            device=device, dtype=args.params_dtype))
-        mpu.layers._initialize_affine_weight_gpu(self.weight, init_method,
-                                        partition_dim=0, stride=stride)
-            
-        if bias:
-            self.bias = nn.Parameter(torch.empty(
+        self.weight = nn.Parameter(
+            torch.empty(
                 self.output_size_per_partition,
+                self.input_size,
                 device=device,
-                dtype=args.params_dtype)
+                dtype=args.params_dtype,
+            )
+        )
+        mpu.layers._initialize_affine_weight_gpu(
+            self.weight, init_method, partition_dim=0, stride=stride
+        )
+
+        if bias:
+            self.bias = nn.Parameter(
+                torch.empty(
+                    self.output_size_per_partition,
+                    device=device,
+                    dtype=args.params_dtype,
+                )
             )
             self.bias.model_parallel = True
             self.bias.partition_dim = 0
@@ -377,12 +414,11 @@ class PipedColumnParallelLinear(torch.nn.Module):
             with torch.no_grad():
                 self.bias.zero_()
         else:
-            self.register_parameter('bias', None)
+            self.register_parameter("bias", None)
 
     def forward(self, input_):
         # Set up backprop all-reduce.
         input_1, input_2 = input_.chunk(2, dim=0)
-
 
         input_parallel_1 = mpu.mappings.copy_to_model_parallel_region(input_1)
         if input_parallel_1.requires_grad:
@@ -392,43 +428,44 @@ class PipedColumnParallelLinear(torch.nn.Module):
         output_parallel_1 = F.linear(input_parallel_1, self.weight, bias)
         if self.gather_output:
             # All-gather across the partitions.
-            output_1 = \
-               mpu.mappings.gather_from_model_parallel_region(output_parallel_1)
+            output_1 = mpu.mappings.gather_from_model_parallel_region(output_parallel_1)
         else:
-            output_1 = output_parallel_1 
+            output_1 = output_parallel_1
 
-        input_parallel_2 = \
-            mpu.mappings.async_copy_to_model_parallel_region(input_2)
+        input_parallel_2 = mpu.mappings.async_copy_to_model_parallel_region(input_2)
         # Matrix multiply.
         bias = self.bias if not self.skip_bias_add else None
         output_parallel_2 = F.linear(input_parallel_2, self.weight, bias)
         if self.gather_output:
             # All-gather across the partitions.
-            output_2 = \
-               mpu.mappings.gather_from_model_parallel_region(output_parallel_2)
+            output_2 = mpu.mappings.gather_from_model_parallel_region(output_parallel_2)
         else:
             output_2 = output_parallel_2
-
 
         output_bias = self.bias if self.skip_bias_add else None
         output = torch.cat((output_1, output_2), dim=0)
         return output, output_bias
 
     def extra_repr(self) -> str:
-        return 'in_features={}, out_features={}, bias={}'.format(
-            self.input_size,
-            self.output_size_per_partition,
-            self.bias is not None
+        return "in_features={}, out_features={}, bias={}".format(
+            self.input_size, self.output_size_per_partition, self.bias is not None
         )
 
 
 class PipedRowParallelLinear(torch.nn.Module):
 
-    def __init__(self, input_size, output_size, bias=True,
-                 input_is_parallel=False,
-                 init_method=init.xavier_normal_, stride=1,
-                 keep_master_weight_for_test=False,
-                 skip_bias_add=False):
+    def __init__(
+        self,
+        input_size,
+        output_size,
+        args,
+        bias=True,
+        input_is_parallel=False,
+        init_method=init.xavier_normal_,
+        stride=1,
+        keep_master_weight_for_test=False,
+        skip_bias_add=False,
+    ):
         super(PipedRowParallelLinear, self).__init__()
 
         # Keep input parameters
@@ -444,51 +481,52 @@ class PipedRowParallelLinear(torch.nn.Module):
         # Note: torch.nn.functional.linear performs XA^T + b and as a result
         # we allocate the transpose.
         # Initialize weight.
-        args = get_args()
         if args.use_cpu:
             device = "cpu"
         else:
             device = torch.cuda.current_device()
 
-        self.weight = nn.Parameter(torch.empty(
-            self.output_size, self.input_size_per_partition,
-            device=device, dtype=args.params_dtype))
-        mpu.layers._initialize_affine_weight_gpu(self.weight, init_method,
-                                                 partition_dim=1, stride=stride)
+        self.weight = nn.Parameter(
+            torch.empty(
+                self.output_size,
+                self.input_size_per_partition,
+                device=device,
+                dtype=args.params_dtype,
+            )
+        )
+        mpu.layers._initialize_affine_weight_gpu(
+            self.weight, init_method, partition_dim=1, stride=stride
+        )
         if bias:
-            self.bias = nn.Parameter(torch.empty(
-                self.output_size, device=device,
-                dtype=args.params_dtype)
+            self.bias = nn.Parameter(
+                torch.empty(self.output_size, device=device, dtype=args.params_dtype)
             )
             # Always initialize bias to zero.
             with torch.no_grad():
                 self.bias.zero_()
         else:
-            self.register_parameter('bias', None)
+            self.register_parameter("bias", None)
 
     def forward(self, input_):
         # Set up backprop all-reduce.
         if self.input_is_parallel:
             input_parallel = input_
         else:
-            input_parallel = \
-                mpu.mappings.scatter_to_model_parallel_region(input_)
-        
-        
+            input_parallel = mpu.mappings.scatter_to_model_parallel_region(input_)
+
         input_1, input_2 = input_parallel.chunk(2, dim=0)
         # Matrix multiply.
         output_parallel_1 = F.linear(input_1, self.weight)
         # All-reduce across all the partitions.
-        output_1_ = \
-         mpu.mappings.async_reduce_from_model_parallel_region(output_parallel_1)
-        
+        output_1_ = mpu.mappings.async_reduce_from_model_parallel_region(
+            output_parallel_1
+        )
+
         output_parallel_2 = F.linear(input_2, self.weight)
 
         async_op = mpu.mappings.ASYNC_OP.pop(0)
         async_op.wait()
-        output_2_ = \
-            mpu.mappings.reduce_from_model_parallel_region(output_parallel_2)
-        
+        output_2_ = mpu.mappings.reduce_from_model_parallel_region(output_parallel_2)
 
         output_1 = output_1_ + self.bias if self.bias is not None else output_1_
         output_2 = output_2_ + self.bias if self.bias is not None else output_2_
@@ -497,40 +535,6 @@ class PipedRowParallelLinear(torch.nn.Module):
         return output, None
 
     def extra_repr(self) -> str:
-        return 'in_features={}, out_features={}, bias={}'.format(
-            self.input_size_per_partition,
-            self.output_size,
-            self.bias is not None
+        return "in_features={}, out_features={}, bias={}".format(
+            self.input_size_per_partition, self.output_size, self.bias is not None
         )
-
-
-def build_layers(name : str, module: torch.nn.Module, mp_size: int, 
-                 init_method : Callable, scaled_init_method : Callable):
-    if isinstance(module, nn.Linear) or name in ['c_attn', 'c_proj', 'c_fc']:
-        _bias = module.bias if isinstance(module.bias, bool) \
-            else isinstance(module.bias, torch.Tensor)
-        if not hasattr(module, 'mp_attr'):
-            return module
-        elif module.mp_attr.startswith('row'):
-            module_args = [module.in_features * mp_size, module.out_features]
-            if module.mp_attr == 'row_mlp':
-                return RowPara(module_args[0], module_args[1],
-                            scaled_init_method, bias=_bias)
-            else:
-                return RowPara(module_args[0], module_args[1],
-                            scaled_init_method, bias=_bias, need_permute=False)
-        elif module.mp_attr.startswith('col'):
-            module_args = [module.in_features, module.out_features * mp_size]
-            if module.mp_attr == 'col_mlp':
-                return ColPara(module_args[0], module_args[1],
-                            init_method, bias=_bias)
-            else:
-                return ColPara(module_args[0], module_args[1],
-                            init_method, bias=_bias, need_permute=False)
-    elif isinstance(module, nn.Conv2d):
-        module_args = module.__dict__
-        if not hasattr(module, 'mp_attr'):
-            return module
-        return ConvPara(**module_args)
-    else:
-        return None

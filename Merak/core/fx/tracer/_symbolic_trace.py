@@ -15,19 +15,20 @@
 
 # Parts of the code here are adapted from https://github.com/huggingface/transformers/blob/v4.15.0/src/transformers/utils/fx.py
 
-import inspect
-import torch
 import copy
+import inspect
 import math
+from typing import Any, Dict, List, Optional, Set, Tuple
 
+import torch
 from torch.fx import Graph
 from transformers import logging
 from transformers.utils.fx import HFTracer
-from typing import Dict, List, Set, Any, Optional, Tuple
 
-from Merak.core.printer import logger
+from Merak import get_logger
 
-logger = logging.get_logger(__name__)
+logger = get_logger("simple")
+
 
 class MerakTracer(HFTracer):
     def __init__(self, autowrap_modules=(math,), autowrap_functions=()):
@@ -41,17 +42,24 @@ class MerakTracer(HFTracer):
         return False
 
     def is_leaf_module(self, m: torch.nn.Module, module_qualified_name: str) -> bool:
-        return (not self._stateless_mod_instanciation_depends_on_proxies(m)) and \
-                super().is_leaf_module(
-                    m, module_qualified_name
-                ) or self.is_manual_leaf_module(m)
+        if hasattr(self, "_stateless_mod_instanciation_depends_on_proxies"):
+            return (
+                (not self._stateless_mod_instanciation_depends_on_proxies(m))
+                and super().is_leaf_module(m, module_qualified_name)
+                or self.is_manual_leaf_module(m)
+            )
+        return (
+            (not self._stateless_mod_instantiation_depends_on_proxies(m))
+            and super().is_leaf_module(m, module_qualified_name)
+            or self.is_manual_leaf_module(m)
+        )
+
 
 def tf_symbolic_trace(
     model: torch.nn.Module,
     input_names: List[str] = None,
     tracer_cls=MerakTracer,
     leaf_modules=(),
-    dummy_inputs=None,
 ) -> Graph:
     """
     Performs symbolic tracing on the model.
@@ -83,12 +91,16 @@ def tf_symbolic_trace(
     input_names = list(input_names)
     concrete_args = get_concrete_args(model, input_names)
 
-    if "past_key_values" in input_names and not getattr(model.config, "use_cache", False):
+    if "past_key_values" in input_names and not getattr(
+        model.config, "use_cache", False
+    ):
         logger.warning(
             "`past_key_values` were specified as input names, but model.config.use_cache = False, this might lead to "
             "unexpected behavior."
         )
-    if "past_key_values" not in input_names and getattr(model.config, "use_cache", False):
+    if "past_key_values" not in input_names and getattr(
+        model.config, "use_cache", False
+    ):
         logger.warning(
             "`past_key_values` were not specified as input names, but model.config.use_cache = True. Setting "
             "model.config.use_cache = False."
@@ -106,23 +118,24 @@ def tf_symbolic_trace(
     traced.class_for_deserialization = model.__class__
     traced.device = model.device
 
-    if isinstance(dummy_inputs, dict):
-        inputs = tuple(dummy_inputs.values())
-    elif isinstance(dummy_inputs, (tuple, list)):
-        inputs = tuple(dummy_inputs)
-    else:
-        raise TypeError("Type of dummy inputs must be list, tuple or dict")
     return traced
 
-def get_concrete_args(model: torch.nn.Module, input_names: List[str]) -> Dict[str, None]:
+
+def get_concrete_args(
+    model: torch.nn.Module, input_names: List[str]
+) -> Dict[str, None]:
     sig = inspect.signature(model.forward)
 
     if not (set(input_names) <= set(sig.parameters.keys())):
-        formatted_input_names = input_names[0] if len(input_names) == 1 else ", ".join(input_names)
+        formatted_input_names = (
+            input_names[0] if len(input_names) == 1 else ", ".join(input_names)
+        )
         formatted_allowed_input_names = ", ".join(sig.parameters.keys())
         raise ValueError(
             f"The model does not have input(s) named: {formatted_input_names}, expected a subset of the following:"
             f" {formatted_allowed_input_names}"
         )
 
-    return {p.name: p.default for p in sig.parameters.values() if p.name not in input_names}
+    return {
+        p.name: p.default for p in sig.parameters.values() if p.name not in input_names
+    }

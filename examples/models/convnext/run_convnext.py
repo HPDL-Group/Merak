@@ -15,23 +15,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import Merak
 import torch
-
-from Merak import MerakArguments, MerakTrainer, init_empty_weights
 from config import load_config
-from transformers import (
-    set_seed,
-    HfArgumentParser,
-    ConvNextForImageClassification,
-    ConvNextConfig,
-)
+from transformers import ConvNextConfig, ConvNextForImageClassification, HfArgumentParser, set_seed
+
+import Merak
+from Merak import MerakArguments, MerakTrainer, init_empty_weights
 from Merak.utils.datasets import DynamicGenDataset
 
 
 # Add custom command-line arguments
 def parse_option(parser):
-    parser.add_argument('--model_name', type=str, help='Name of the model to load (e.g. gpt2)')
+    parser.add_argument(
+        "--model_name", type=str, help="Name of the model to load (e.g. gpt2)"
+    )
     return parser
 
 
@@ -46,14 +43,16 @@ def main():
     if tp > 1:
         from Merak.core.tensor_parallel.mp_attrs import set_tp_layer_lists
 
-        col_para_list = ['query', 'key', 'value']
-        row_para_list = ['attention.dense']
-        tp_attr_list = ['num_attention_heads', 'all_head_size']
+        col_para_list = ["query", "key", "value"]
+        row_para_list = ["attention.dense"]
+        tp_attr_list = ["num_attention_heads", "all_head_size"]
 
         # manully set tp attribute for swin model
-        set_tp_layer_lists(col_para_list=col_para_list, row_para_list=row_para_list, 
-                           tp_attr_list=tp_attr_list)
-
+        set_tp_layer_lists(
+            col_para_list=col_para_list,
+            row_para_list=row_para_list,
+            tp_attr_list=tp_attr_list,
+        )
 
     # Parse training and model arguments
     hfparser = HfArgumentParser(MerakArguments)

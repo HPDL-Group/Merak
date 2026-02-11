@@ -1,9 +1,4 @@
-__all__ = ['MerakArguments', 'get_args', 'mergeargs', 'manual_set_args']
+__all__ = ["MerakArguments", "mergeargs", "manual_set_args"]
 
 
-from .args import (
-    MerakArguments,
-    get_args,
-    mergeargs,
-    manual_set_args
-)
+from .args import MerakArguments, manual_set_args, mergeargs
