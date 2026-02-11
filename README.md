@@ -23,6 +23,7 @@ limitations under the License.
 -   More transformers models supported, part of [supported models](https://github.com/huggingface/transformers/blob/3f06f95ebe617b192251ef756518690f5bc7ff76/src/transformers/utils/fx.py#L122C1-L123C1).
 -   More convenient API and easier-to-understand code structure.
 -   More 3D model training/inference building methods, supporting [torch.fx](https://pytorch.org/docs/stable/fx.html) and [torch.dynamo](https://pytorch.org/docs/stable/torch.compiler_dynamo_overview.html) for tracing computation graphs.
+-   A prototype of [AdaCheck](https://www.usenix.org/conference/fast26/presentation/liu-weijie) is available in the [`adacheck`](https://github.com/HPDL-Group/Merak/tree/adacheck) branch
 
 # Merak: fast and easy to use 3D parallelism DNN training framework
 
